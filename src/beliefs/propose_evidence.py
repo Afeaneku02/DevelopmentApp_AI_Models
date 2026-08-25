@@ -31,6 +31,7 @@ from datetime import datetime
 
 from src.beliefs.models import BeliefEvidenceProposal
 from src.common.enums import AggregationMode, BeliefType, Direction, LinkRole, SourceType
+from src.common.provenance import validate_observation_provenance
 from src.common.registry import BELIEF_TYPE_REGISTRY, SOURCE_TYPE_RELIABILITY
 from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
@@ -158,6 +159,78 @@ def propose_evidence_from_event(
         scoring_version=scoring_version,
         canonicalizer_version=canonicalizer_version,
         policy_version=policy_version,
+    )
+
+
+def propose_evidence_from_observation_validated(
+    observation: UserObservation,
+    observation_events: list[ObservationEvent],
+    source_events: list[UserEvent],
+    *,
+    belief_id: str,
+    direction: Direction,
+    source_type: SourceType,
+    context_key: str,
+    strength: float,
+    model_version: str,
+    schema_version: str,
+    scoring_version: str,
+    canonicalizer_version: str,
+    policy_version: str,
+    prompt_version: str | None = None,
+    source_reliability: float | None = None,
+    reliability_deviation_reason: str | None = None,
+    decay_lambda: float | None = None,
+    belief_type: BeliefType | None = None,
+    proposed_aggregation_mode: AggregationMode = AggregationMode.LEAF_DEFAULT,
+    replaces_evidence_ids: list[str] | None = None,
+) -> BeliefEvidenceProposal:
+    """Cross-record-integrity-checked wrapper around
+    ``propose_evidence_from_observation()``.
+
+    ``propose_evidence_from_observation()`` itself is deliberately pure and
+    narrow: given an observation and its links, it trusts that every linked
+    event genuinely exists and belongs to the same user, and derives
+    ``source_event_ids`` accordingly. That trust is exactly the gap this
+    wrapper closes -- it additionally requires ``source_events`` (the actual
+    ``UserEvent`` rows the links claim to reference) and runs
+    ``validate_observation_provenance()`` against
+    ``[observation], observation_events, source_events`` *before* calling the
+    underlying function. If validation finds anything wrong -- a link to a
+    missing event, a link to another user's event, or no primary link at all
+    -- this raises ``ValueError`` with every problem found, and
+    ``propose_evidence_from_observation()`` is never called.
+
+    This is the only place in the pipeline that checks cross-record
+    integrity against real event data; the lower-level function stays pure
+    and unaware of any validation layer, so it remains directly composable
+    and testable on its own (see ``tests/beliefs/test_propose_evidence.py``).
+    """
+    errors = validate_observation_provenance([observation], observation_events, source_events)
+    if errors:
+        raise ValueError(
+            f"cannot propose evidence from observation {observation.observation_id!r}: " + "; ".join(errors)
+        )
+    return propose_evidence_from_observation(
+        observation,
+        observation_events,
+        belief_id=belief_id,
+        direction=direction,
+        source_type=source_type,
+        context_key=context_key,
+        strength=strength,
+        model_version=model_version,
+        schema_version=schema_version,
+        scoring_version=scoring_version,
+        canonicalizer_version=canonicalizer_version,
+        policy_version=policy_version,
+        prompt_version=prompt_version,
+        source_reliability=source_reliability,
+        reliability_deviation_reason=reliability_deviation_reason,
+        decay_lambda=decay_lambda,
+        belief_type=belief_type,
+        proposed_aggregation_mode=proposed_aggregation_mode,
+        replaces_evidence_ids=replaces_evidence_ids,
     )
 
 
