@@ -31,7 +31,7 @@ The single most important section for this skill is section 18 "Definition of Do
 - section 14.1 "Required v0.6.1/v0.6.2 Contract Tests" - the specific regression tests a change must not silently break.
 - section 22 "Decision Log" - standing decisions a change must not contradict without an explicit, documented reason.
 
-`references/schema.md` lists every closed enum and required version-field set in one place for quick recall. `scripts/validate_output.py` runs the deterministic parts of this check (enum membership, required version fields) against a JSON record.
+`references/schema.md` lists every closed enum and required version-field set in one place for quick recall. `scripts/validate_output.py` runs the deterministic parts of this check (enum membership, required version fields) against a JSON record. For belief_evidence, pick the record type deliberately: `evidence` validates a pre-authorization proposal and fails if it carries any backend-owned field at all; `evidence_record` validates an already-authorized, persisted row and instead checks its authorization metadata is internally consistent. Running `evidence` against a backend-authorized record will always fail - that is a misuse of the check, not a real violation.
 
 ## Procedure
 
@@ -42,7 +42,7 @@ The single most important section for this skill is section 18 "Definition of Do
 5. **Check confidence/status/eligibility separation held.** A change must never let numeric confidence alone bypass `sensitivity_class`, `disallowed_contexts`, `persistence_policy`, staleness, an explicit user correction, or a risk-policy gate.
 6. **Check the branch order on invalidation/no-evidence logic**, if the change touches scoring - the invalidation/no-active-evidence branch must still run before the generic no-evidence branch (section 6.0.2, section 14.1).
 7. **Check tests and examples were updated, not just code.** A contract change without an updated regression fixture is incomplete per section 10.4 ("a skill is not complete until at least one regression fixture proves it prevents the failure mode") and per section 18's own requirement for regression coverage.
-8. **Run `scripts/validate_output.py`** against representative output records from the change (a belief, an evidence row, a recommendation) as the deterministic part of the review; do the authorization-boundary and test-coverage checks above by reading the diff.
+8. **Run `scripts/validate_output.py`** against representative output records from the change (a belief, an `evidence` proposal and/or an `evidence_record`, a recommendation) as the deterministic part of the review; do the authorization-boundary and test-coverage checks above by reading the diff.
 
 ## Completion check
 
