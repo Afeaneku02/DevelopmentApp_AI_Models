@@ -10,8 +10,11 @@ Covers exactly the five things this phase must prove:
 """
 from __future__ import annotations
 
+import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from src.beliefs.models import UserBelief, authorize_evidence
 from src.beliefs.propose_evidence import propose_evidence_from_observation_validated
@@ -374,6 +377,203 @@ class NoStaleBeliefAfterInvalidationTests(RepositoryTestCase):
         self.assertEqual(latest.status.value, "outdated")
         # The stale, higher-confidence first_belief must not be what comes back.
         self.assertNotEqual(latest.confidence, first_belief.confidence)
+
+
+class ReadOnlyListingHelpersTests(RepositoryTestCase):
+    """tools/inspect_user_model.py's read-only support: list_events(),
+    list_observations(), list_observation_events_for(), list_all_evidence(),
+    and list_latest_beliefs() -- the general-purpose, optionally-multi-scope
+    listers added for inspection, distinct from the single-scope helpers
+    (get_event(), list_evidence(), get_latest_belief(), etc.) every pipeline
+    step already uses because it knows exactly which scope it wants."""
+
+    def _seed_one_full_chain(self, *, user_id: str, belief_id: str, event_id: str, observation_id: str,
+                              evidence_id: str) -> None:
+        event = _event(event_id, user_id=user_id)
+        self.repo.insert_event(event)
+        observation, links = create_observation_from_event(
+            event, observation_id=observation_id, category="routine", observation_text="x",
+            importance=0.6, confidence=0.6, created_at=event.timestamp, **VERSION_FIELDS,
+        )
+        self.repo.insert_observation(observation, links)
+        proposal = propose_evidence_from_observation_validated(
+            observation, links, [event], belief_id=belief_id, direction="support",
+            source_type="recorded_event", context_key="fitness", strength=0.9,
+            model_version="pipeline-0.1", belief_type=BELIEF_TYPE, **VERSION_FIELDS,
+        )
+        evidence = authorize_evidence(
+            proposal, evidence_id=evidence_id, created_at=event.timestamp,
+            aggregation_policy_version="evidence-aggregation-0.6",
+        )
+        self.repo.insert_evidence(evidence)
+
+    def test_list_events_returns_all_events_and_can_be_scoped_by_user(self) -> None:
+        self.repo.insert_event(_event("evt_1", user_id="usr_1"))
+        self.repo.insert_event(_event("evt_2", user_id="usr_2"))
+
+        self.assertEqual({e.event_id for e in self.repo.list_events()}, {"evt_1", "evt_2"})
+        self.assertEqual([e.event_id for e in self.repo.list_events(user_id="usr_2")], ["evt_2"])
+
+    def test_list_observations_returns_all_observations_and_can_be_scoped_by_user(self) -> None:
+        self._seed_one_full_chain(
+            user_id="usr_1", belief_id="bel_1", event_id="evt_1",
+            observation_id="obs_1", evidence_id="bev_1",
+        )
+        self._seed_one_full_chain(
+            user_id="usr_2", belief_id="bel_1", event_id="evt_2",
+            observation_id="obs_2", evidence_id="bev_2",
+        )
+
+        self.assertEqual(
+            {o.observation_id for o in self.repo.list_observations()}, {"obs_1", "obs_2"}
+        )
+        self.assertEqual(
+            [o.observation_id for o in self.repo.list_observations(user_id="usr_1")], ["obs_1"]
+        )
+
+    def test_list_observation_events_for_returns_links_for_the_given_ids_only(self) -> None:
+        self._seed_one_full_chain(
+            user_id="usr_1", belief_id="bel_1", event_id="evt_1",
+            observation_id="obs_1", evidence_id="bev_1",
+        )
+        self._seed_one_full_chain(
+            user_id="usr_2", belief_id="bel_1", event_id="evt_2",
+            observation_id="obs_2", evidence_id="bev_2",
+        )
+
+        links = self.repo.list_observation_events_for(["obs_1"])
+        self.assertEqual([link.observation_id for link in links], ["obs_1"])
+        self.assertEqual(self.repo.list_observation_events_for([]), [])
+
+    def test_list_all_evidence_supports_optional_user_and_belief_filters(self) -> None:
+        self._seed_one_full_chain(
+            user_id="usr_1", belief_id="bel_1", event_id="evt_1",
+            observation_id="obs_1", evidence_id="bev_1",
+        )
+        self._seed_one_full_chain(
+            user_id="usr_1", belief_id="bel_2", event_id="evt_2",
+            observation_id="obs_2", evidence_id="bev_2",
+        )
+        self._seed_one_full_chain(
+            user_id="usr_2", belief_id="bel_1", event_id="evt_3",
+            observation_id="obs_3", evidence_id="bev_3",
+        )
+
+        self.assertEqual(
+            {e.evidence_id for e in self.repo.list_all_evidence()}, {"bev_1", "bev_2", "bev_3"}
+        )
+        self.assertEqual(
+            {e.evidence_id for e in self.repo.list_all_evidence(user_id="usr_1")}, {"bev_1", "bev_2"}
+        )
+        self.assertEqual(
+            {e.evidence_id for e in self.repo.list_all_evidence(belief_id="bel_1")}, {"bev_1", "bev_3"}
+        )
+        self.assertEqual(
+            [e.evidence_id for e in self.repo.list_all_evidence(user_id="usr_1", belief_id="bel_1")],
+            ["bev_1"],
+        )
+
+    def test_list_all_evidence_includes_inactive_rows_unlike_list_active_evidence(self) -> None:
+        self._seed_one_full_chain(
+            user_id="usr_1", belief_id="bel_1", event_id="evt_1",
+            observation_id="obs_1", evidence_id="bev_1",
+        )
+        self.repo.mark_evidence_inactive("bev_1", reason="deletion", invalidated_at=AS_OF)
+
+        self.assertEqual(self.repo.list_active_evidence(user_id="usr_1", belief_id="bel_1"), [])
+        all_evidence = self.repo.list_all_evidence(user_id="usr_1", belief_id="bel_1")
+        self.assertEqual(len(all_evidence), 1)
+        self.assertFalse(all_evidence[0].is_active)
+
+    def test_list_latest_beliefs_returns_the_newest_row_per_scope_and_supports_filters(self) -> None:
+        self._seed_one_full_chain(
+            user_id="usr_1", belief_id="bel_1", event_id="evt_1",
+            observation_id="obs_1", evidence_id="bev_1",
+        )
+        self._seed_one_full_chain(
+            user_id="usr_1", belief_id="bel_2", event_id="evt_2",
+            observation_id="obs_2", evidence_id="bev_2",
+        )
+        for belief_id in ("bel_1", "bel_2"):
+            belief = recompute_belief(
+                belief_id=belief_id, user_id="usr_1", belief_type=BELIEF_TYPE,
+                belief_key=BELIEF_KEY, belief_value=True,
+                evidence=self.repo.list_active_evidence(user_id="usr_1", belief_id=belief_id),
+                as_of=AS_OF, first_observed=AS_OF, **VERSION_FIELDS,
+            )
+            self.repo.save_belief(belief)
+        # A second recompute on bel_1 only -- list_latest_beliefs() must
+        # return this newer row for bel_1, not the first one saved.
+        second_bel_1 = recompute_belief(
+            belief_id="bel_1", user_id="usr_1", belief_type=BELIEF_TYPE, belief_key=BELIEF_KEY,
+            belief_value=True, evidence=self.repo.list_active_evidence(user_id="usr_1", belief_id="bel_1"),
+            as_of=AS_OF + timedelta(days=1), first_observed=AS_OF, **VERSION_FIELDS,
+        )
+        self.repo.save_belief(second_bel_1)
+
+        all_latest = self.repo.list_latest_beliefs()
+        self.assertEqual({(b.belief_id, b.last_validated) for b in all_latest},
+                          {("bel_1", second_bel_1.last_validated), ("bel_2", AS_OF)})
+
+        scoped = self.repo.list_latest_beliefs(user_id="usr_1", belief_id="bel_1")
+        self.assertEqual(len(scoped), 1)
+        self.assertEqual(scoped[0].last_validated, second_bel_1.last_validated)
+
+    def test_list_latest_beliefs_returns_empty_list_when_no_belief_saved_for_scope(self) -> None:
+        self.assertEqual(self.repo.list_latest_beliefs(user_id="usr_ghost", belief_id="bel_ghost"), [])
+
+
+class ReadonlyAtPathTests(unittest.TestCase):
+    """Repository.readonly_at_path() -- tools/inspect_user_model.py's whole
+    read-only guarantee rests on this constructor actually enforcing it at
+    the SQLite layer, not merely by the caller's own discipline."""
+
+    def test_missing_path_raises_file_not_found_and_creates_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_path = Path(tmp) / "does_not_exist.sqlite3"
+
+            with self.assertRaises(FileNotFoundError):
+                Repository.readonly_at_path(str(missing_path))
+
+            self.assertFalse(missing_path.exists())
+
+    def test_opens_an_existing_database_and_can_read_from_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            writable = Repository.at_path(db_path)
+            writable.insert_event(_event("evt_1"))
+            writable.close()
+
+            readonly = Repository.readonly_at_path(db_path)
+            try:
+                events = readonly.list_events()
+            finally:
+                readonly.close()
+            self.assertEqual([e.event_id for e in events], ["evt_1"])
+
+    def test_write_attempt_is_rejected_at_the_sqlite_level(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            Repository.at_path(db_path).close()
+
+            readonly = Repository.readonly_at_path(db_path)
+            try:
+                with self.assertRaises(sqlite3.OperationalError):
+                    readonly.insert_event(_event("evt_1"))
+            finally:
+                readonly.close()
+
+            # Confirm nothing was actually written despite the attempt.
+            verifying = Repository.at_path(db_path)
+            try:
+                self.assertIsNone(verifying.get_event("evt_1"))
+            finally:
+                verifying.close()
+
+    def test_directory_path_is_rejected_like_a_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                Repository.readonly_at_path(tmp)
 
 
 if __name__ == "__main__":

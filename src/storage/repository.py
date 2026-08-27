@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 from src.beliefs.models import BeliefEvidence, UserBelief, active_evidence, invalidate_evidence
 from src.common.provenance import validate_belief_evidence_provenance, validate_observation_provenance
@@ -94,15 +95,20 @@ CREATE INDEX IF NOT EXISTS idx_user_beliefs_scope
 
 class Repository:
     """A single SQLite connection's worth of storage for one adaptive-user-
-    model dataset. Construct via ``Repository.in_memory()`` for tests or
-    ``Repository.at_path(path)`` for an on-disk database; both run the same
-    idempotent schema-creation step (``CREATE TABLE IF NOT EXISTS``).
+    model dataset. Construct via ``Repository.in_memory()`` for tests,
+    ``Repository.at_path(path)`` for a writable on-disk database (both run
+    the same idempotent schema-creation step, ``CREATE TABLE IF NOT
+    EXISTS``), or ``Repository.readonly_at_path(path)`` for a strictly
+    read-only view of an existing on-disk database (no schema creation, no
+    writes possible at the SQLite connection level -- see that
+    constructor's own docstring).
     """
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, *, run_schema: bool = True) -> None:
         self._conn = connection
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        if run_schema:
+            self._conn.executescript(_SCHEMA)
+            self._conn.commit()
 
     @classmethod
     def in_memory(cls) -> "Repository":
@@ -111,6 +117,44 @@ class Repository:
     @classmethod
     def at_path(cls, path: str) -> "Repository":
         return cls(sqlite3.connect(path))
+
+    @classmethod
+    def readonly_at_path(cls, path: str) -> "Repository":
+        """Opens an existing on-disk database strictly read-only, via
+        sqlite3's own URI ``mode=ro`` -- for a caller (``tools/
+        inspect_user_model.py``) that must never create a database file or
+        schema that doesn't already exist, and must never write to one that
+        does, at the SQLite connection level rather than merely by
+        convention (an accidental ``INSERT``/``UPDATE`` call against the
+        returned ``Repository`` fails with ``sqlite3.OperationalError:
+        attempt to write a readonly database`` instead of silently
+        succeeding).
+
+        Unlike ``at_path()``, this skips the schema-creation step entirely:
+        running ``CREATE TABLE IF NOT EXISTS`` against a read-only
+        connection would itself raise (SQLite still attempts the write even
+        when the table already exists), and there is no writable connection
+        here to create a schema with in the first place.
+
+        Raises ``FileNotFoundError`` with a clear, specific message if
+        ``path`` does not name an existing file, checked explicitly before
+        SQLite ever opens the URI connection: SQLite's own failure for a
+        missing file under ``mode=ro`` is an opaque
+        ``sqlite3.OperationalError: unable to open database file``, which
+        does not by itself distinguish "no such file" (most likely a typoed
+        path) from other open failures -- checking first here gives callers
+        a specific, actionable error instead of one they would have to
+        parse SQLite's message to interpret. This is also what stops this
+        method from ever creating the file: SQLite's ``mode=ro`` alone would
+        already refuse to create one, but failing before SQLite is even
+        invoked makes that guarantee explicit here rather than incidental to
+        a flag on the URI.
+        """
+        resolved = Path(path)
+        if not resolved.is_file():
+            raise FileNotFoundError(f"no such database file: {path!r}")
+        uri = f"file:{resolved.resolve().as_posix()}?mode=ro"
+        return cls(sqlite3.connect(uri, uri=True), run_schema=False)
 
     def close(self) -> None:
         self._conn.close()
@@ -136,6 +180,19 @@ class Repository:
         rows = self._conn.execute(
             f"SELECT data FROM user_events WHERE event_id IN ({placeholders})", event_ids
         ).fetchall()
+        return [UserEvent.model_validate_json(row[0]) for row in rows]
+
+    def list_events(self, *, user_id: str | None = None) -> list[UserEvent]:
+        """Every stored event, optionally scoped to one user. Read-only --
+        for inspection (``tools/inspect_user_model.py``), not for any
+        pipeline step, which already knows exactly which event_ids it needs
+        via ``get_event()``/``_get_events()``."""
+        if user_id is not None:
+            rows = self._conn.execute(
+                "SELECT data FROM user_events WHERE user_id = ?", (user_id,)
+            ).fetchall()
+        else:
+            rows = self._conn.execute("SELECT data FROM user_events").fetchall()
         return [UserEvent.model_validate_json(row[0]) for row in rows]
 
     # ------------------------------------------------------- observations --
@@ -184,6 +241,30 @@ class Repository:
         ).fetchall()
         return [ObservationEvent.model_validate_json(row[0]) for row in rows]
 
+    def list_observations(self, *, user_id: str | None = None) -> list[UserObservation]:
+        """Every stored observation, optionally scoped to one user. Read-only
+        -- for inspection (``tools/inspect_user_model.py``)."""
+        if user_id is not None:
+            rows = self._conn.execute(
+                "SELECT data FROM user_observations WHERE user_id = ?", (user_id,)
+            ).fetchall()
+        else:
+            rows = self._conn.execute("SELECT data FROM user_observations").fetchall()
+        return [UserObservation.model_validate_json(row[0]) for row in rows]
+
+    def list_observation_events_for(self, observation_ids: list[str]) -> list[ObservationEvent]:
+        """Bulk form of ``list_observation_events()`` for a known set of
+        observation_ids. Read-only -- for inspection
+        (``tools/inspect_user_model.py``), which already has the observation
+        list it wants links for."""
+        if not observation_ids:
+            return []
+        placeholders = ",".join("?" for _ in observation_ids)
+        rows = self._conn.execute(
+            f"SELECT data FROM observation_events WHERE observation_id IN ({placeholders})", observation_ids
+        ).fetchall()
+        return [ObservationEvent.model_validate_json(row[0]) for row in rows]
+
     # ----------------------------------------------------------- evidence --
 
     def insert_evidence(self, evidence: BeliefEvidence) -> None:
@@ -229,6 +310,31 @@ class Repository:
         used elsewhere -- see the module docstring for why this is not a
         second, SQL-level definition of "active."""
         return active_evidence(self.list_evidence(user_id=user_id, belief_id=belief_id))
+
+    def list_all_evidence(
+        self, *, user_id: str | None = None, belief_id: str | None = None
+    ) -> list[BeliefEvidence]:
+        """Every stored evidence row (active and inactive alike) matching
+        either or both optional filters. Unlike ``list_evidence()``, both
+        filters are optional -- this is a general-purpose lister for
+        inspection (``tools/inspect_user_model.py``), not a belief-scoped
+        query a pipeline step already knows both ids for. Apply
+        ``active_evidence()`` to the result for an active-only view, the same
+        helper ``list_active_evidence()`` itself uses -- this method
+        deliberately does not filter by activity so a caller can choose."""
+        clauses: list[str] = []
+        params: list[str] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if belief_id is not None:
+            clauses.append("belief_id = ?")
+            params.append(belief_id)
+        query = "SELECT data FROM belief_evidence"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        rows = self._conn.execute(query, params).fetchall()
+        return [BeliefEvidence.model_validate_json(row[0]) for row in rows]
 
     def mark_evidence_inactive(self, evidence_id: str, *, reason: str, invalidated_at: datetime) -> BeliefEvidence:
         """Loads the row, applies ``invalidate_evidence()`` (the same
@@ -306,3 +412,33 @@ class Repository:
             (user_id, belief_id),
         ).fetchone()
         return UserBelief.model_validate_json(row[0]) if row else None
+
+    def list_latest_beliefs(
+        self, *, user_id: str | None = None, belief_id: str | None = None
+    ) -> list[UserBelief]:
+        """The latest saved belief for every (user_id, belief_id) scope
+        matching either or both optional filters -- the general-purpose,
+        possibly-multi-scope form of ``get_latest_belief()`` for inspection
+        (``tools/inspect_user_model.py``), which does not necessarily know a
+        single scope up front. Each scope's own append-only history (see
+        ``save_belief()``) is still resolved the same way ``get_latest_belief()``
+        resolves it -- the most recently inserted row for that scope -- just
+        for every matching scope at once instead of one named pair."""
+        clauses: list[str] = []
+        params: list[str] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if belief_id is not None:
+            clauses.append("belief_id = ?")
+            params.append(belief_id)
+        where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        query = (
+            "SELECT b.data FROM user_beliefs b "
+            "INNER JOIN ("
+            f"SELECT user_id, belief_id, MAX(id) AS max_id FROM user_beliefs{where_sql} "
+            "GROUP BY user_id, belief_id"
+            ") latest ON b.id = latest.max_id"
+        )
+        rows = self._conn.execute(query, params).fetchall()
+        return [UserBelief.model_validate_json(row[0]) for row in rows]
