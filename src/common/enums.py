@@ -71,6 +71,20 @@ class AggregationReviewStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class CanonicalizationDecision(str, Enum):
+    """belief_key canonicalization outcome (blueprint section 5.2): a
+    proposal (an extractor/LLM's suggestion) or an authorized record (the
+    backend's final decision) both use this same four-value vocabulary.
+    ``merge`` is a value a proposal may request, but backend authorization
+    logic never grants it automatically -- see
+    ``src.beliefs.canonicalization.authorize_belief_key_canonicalization()``."""
+
+    KEEP_SEPARATE = "keep_separate"
+    ALIAS = "alias"
+    MERGE = "merge"
+    MANUAL_REVIEW = "manual_review"
+
+
 class SensitivityClass(str, Enum):
     NORMAL = "normal"
     SENSITIVE = "sensitive"

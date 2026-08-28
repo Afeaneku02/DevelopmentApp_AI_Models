@@ -16,6 +16,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from src.beliefs.canonicalization import BeliefKeyCanonicalizationProposal, authorize_belief_key_canonicalization
 from src.beliefs.models import UserBelief, authorize_evidence, suppress_duplicate_evidence
 from src.beliefs.propose_evidence import propose_evidence_from_observation_validated
 from src.beliefs.recompute import recompute_belief
@@ -687,6 +688,103 @@ class ReadOnlyListingHelpersTests(RepositoryTestCase):
 
     def test_list_latest_beliefs_returns_empty_list_when_no_belief_saved_for_scope(self) -> None:
         self.assertEqual(self.repo.list_latest_beliefs(user_id="usr_ghost", belief_id="bel_ghost"), [])
+
+
+class BeliefKeyCanonicalizationPersistenceTests(RepositoryTestCase):
+    """Repository.insert_belief_key_canonicalization()/
+    get_latest_belief_key_canonicalization()/list_belief_key_canonicalizations()
+    -- the persisted audit trail for belief-key canonicalization decisions
+    (blueprint section 5.2), append-only like every other ledger table in
+    this module."""
+
+    def _authorize(self, *, canonicalization_id: str, proposed_key: str, belief_type: str = BELIEF_TYPE):
+        proposal = BeliefKeyCanonicalizationProposal(
+            user_id=USER_ID, belief_type=belief_type, proposed_key=proposed_key, **VERSION_FIELDS,
+        )
+        return authorize_belief_key_canonicalization(
+            proposal, canonicalization_id=canonicalization_id, authorized_at=AS_OF,
+        )
+
+    def test_insert_then_get_latest_round_trips(self) -> None:
+        decision = self._authorize(canonicalization_id="can_1", proposed_key="prefers_evening_exercise_sessions")
+        self.repo.insert_belief_key_canonicalization(decision)
+
+        latest = self.repo.get_latest_belief_key_canonicalization(
+            user_id=USER_ID, belief_type=BELIEF_TYPE, proposed_key="prefers_evening_exercise_sessions",
+        )
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest.canonical_key, "higher_adherence_after_work")
+        self.assertEqual(latest.decision.value, "alias")
+
+    def test_get_latest_returns_none_for_a_never_resolved_key(self) -> None:
+        self.assertIsNone(
+            self.repo.get_latest_belief_key_canonicalization(
+                user_id=USER_ID, belief_type=BELIEF_TYPE, proposed_key="never_seen_before",
+            )
+        )
+
+    def test_list_returns_the_full_append_only_audit_trail_in_order(self) -> None:
+        first = self._authorize(canonicalization_id="can_1", proposed_key="key_a")
+        second = self._authorize(canonicalization_id="can_2", proposed_key="key_b")
+        self.repo.insert_belief_key_canonicalization(first)
+        self.repo.insert_belief_key_canonicalization(second)
+
+        all_decisions = self.repo.list_belief_key_canonicalizations(user_id=USER_ID)
+        self.assertEqual(
+            [d.canonicalization_id for d in all_decisions], ["can_1", "can_2"],
+        )
+
+    def test_list_can_be_scoped_by_belief_type(self) -> None:
+        matching = self._authorize(canonicalization_id="can_1", proposed_key="key_a", belief_type=BELIEF_TYPE)
+        other = self._authorize(
+            canonicalization_id="can_2", proposed_key="key_b", belief_type="goal_or_intention",
+        )
+        self.repo.insert_belief_key_canonicalization(matching)
+        self.repo.insert_belief_key_canonicalization(other)
+
+        scoped = self.repo.list_belief_key_canonicalizations(user_id=USER_ID, belief_type=BELIEF_TYPE)
+        self.assertEqual([d.canonicalization_id for d in scoped], ["can_1"])
+
+    def test_a_later_re_resolution_of_the_same_key_does_not_overwrite_the_audit_trail(self) -> None:
+        # E.g. a human later resolves a manual_review case -- the original
+        # decision must remain visible in the audit trail, not be replaced.
+        first = self._authorize(canonicalization_id="can_1", proposed_key="key_a")
+        self.repo.insert_belief_key_canonicalization(first)
+        second = self._authorize(canonicalization_id="can_2", proposed_key="key_a")
+        self.repo.insert_belief_key_canonicalization(second)
+
+        all_for_key = [
+            d for d in self.repo.list_belief_key_canonicalizations(user_id=USER_ID)
+            if d.proposed_key == "key_a"
+        ]
+        self.assertEqual(len(all_for_key), 2)
+
+        latest = self.repo.get_latest_belief_key_canonicalization(
+            user_id=USER_ID, belief_type=BELIEF_TYPE, proposed_key="key_a",
+        )
+        self.assertEqual(latest.canonicalization_id, "can_2")
+
+    def test_duplicate_canonicalization_id_is_rejected_and_the_original_row_is_unchanged(self) -> None:
+        # canonicalization_id must behave like every other externally
+        # supplied record id in this project (event_id, observation_id,
+        # evidence_id): stable and unique, even across two different
+        # proposed_key values.
+        original = self._authorize(canonicalization_id="can_1", proposed_key="key_a")
+        self.repo.insert_belief_key_canonicalization(original)
+
+        duplicate = self._authorize(canonicalization_id="can_1", proposed_key="key_b")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.repo.insert_belief_key_canonicalization(duplicate)
+
+        all_decisions = self.repo.list_belief_key_canonicalizations(user_id=USER_ID)
+        self.assertEqual(len(all_decisions), 1)
+        self.assertEqual(all_decisions[0].proposed_key, "key_a")
+
+        # Re-resolving the same proposed_key is still allowed -- just with
+        # its own, never-before-used canonicalization_id.
+        second = self._authorize(canonicalization_id="can_2", proposed_key="key_a")
+        self.repo.insert_belief_key_canonicalization(second)
+        self.assertEqual(len(self.repo.list_belief_key_canonicalizations(user_id=USER_ID)), 2)
 
 
 class ReadonlyAtPathTests(unittest.TestCase):

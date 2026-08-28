@@ -54,6 +54,7 @@ from src.beliefs.models import (
     invalidate_evidence,
     suppress_duplicate_evidence,
 )
+from src.beliefs.canonicalization import BeliefKeyCanonicalization
 from src.common.provenance import validate_belief_evidence_provenance, validate_observation_provenance
 from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
@@ -97,6 +98,17 @@ CREATE TABLE IF NOT EXISTS user_beliefs (
 );
 CREATE INDEX IF NOT EXISTS idx_user_beliefs_scope
     ON user_beliefs (user_id, belief_id, id);
+
+CREATE TABLE IF NOT EXISTS belief_key_canonicalizations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonicalization_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    belief_type TEXT NOT NULL,
+    proposed_key TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_belief_key_canonicalizations_scope
+    ON belief_key_canonicalizations (user_id, belief_type, proposed_key, id);
 """
 
 
@@ -489,3 +501,75 @@ class Repository:
         )
         rows = self._conn.execute(query, params).fetchall()
         return [UserBelief.model_validate_json(row[0]) for row in rows]
+
+    # ------------------------------------------------- belief-key canonicalization --
+
+    def insert_belief_key_canonicalization(self, decision: BeliefKeyCanonicalization) -> None:
+        """Append-only audit log insert -- every canonicalization decision
+        ever authorized is kept, never overwritten or replaced, exactly like
+        ``save_belief()``'s own append-only history. Re-validates through
+        ``BeliefKeyCanonicalization`` first (the same "re-validation, not
+        the type hint, is what enforces this" pattern as every other
+        insert_*() method), so a bare ``BeliefKeyCanonicalizationProposal``
+        (missing ``canonical_key``, ``decision``, or any other backend-owned
+        field) fails before a single byte is written.
+
+        ``canonicalization_id`` is ``UNIQUE`` at the schema level, raising
+        ``sqlite3.IntegrityError`` for a repeat -- the same stable-unique-id
+        contract every other externally supplied record id already has
+        (``event_id``, ``observation_id``, ``evidence_id``). Re-resolving
+        the same ``proposed_key`` is still fully allowed and expected (that
+        is exactly what grows the audit trail; see
+        ``get_latest_belief_key_canonicalization()``), it just requires a
+        new ``canonicalization_id`` for each appended decision, same as a
+        new evidence row needs its own ``evidence_id`` even when it is
+        evidence for the same belief as an earlier row.
+        """
+        validated = BeliefKeyCanonicalization.model_validate(decision.model_dump())
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO belief_key_canonicalizations "
+                "(canonicalization_id, user_id, belief_type, proposed_key, data) VALUES (?, ?, ?, ?, ?)",
+                (
+                    validated.canonicalization_id, validated.user_id, validated.belief_type.value,
+                    validated.proposed_key, validated.model_dump_json(),
+                ),
+            )
+
+    def get_latest_belief_key_canonicalization(
+        self, *, user_id: str, belief_type: str, proposed_key: str
+    ) -> BeliefKeyCanonicalization | None:
+        """The most recently authorized canonicalization decision for one
+        exact (user_id, belief_type, proposed_key) scope, or ``None`` if
+        this proposed_key has never been resolved before -- the same
+        "most recently inserted row for this scope" resolution as
+        ``get_latest_belief()``."""
+        row = self._conn.execute(
+            "SELECT data FROM belief_key_canonicalizations "
+            "WHERE user_id = ? AND belief_type = ? AND proposed_key = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, belief_type, proposed_key),
+        ).fetchone()
+        return BeliefKeyCanonicalization.model_validate_json(row[0]) if row else None
+
+    def list_belief_key_canonicalizations(
+        self, *, user_id: str | None = None, belief_type: str | None = None
+    ) -> list[BeliefKeyCanonicalization]:
+        """Every canonicalization decision ever authorized, optionally
+        scoped by user and/or belief_type -- the full audit trail, not just
+        the latest decision per key (see ``get_latest_belief_key_canonicalization()``
+        for that)."""
+        clauses: list[str] = []
+        params: list[str] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if belief_type is not None:
+            clauses.append("belief_type = ?")
+            params.append(belief_type)
+        query = "SELECT data FROM belief_key_canonicalizations"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id ASC"
+        rows = self._conn.execute(query, params).fetchall()
+        return [BeliefKeyCanonicalization.model_validate_json(row[0]) for row in rows]
