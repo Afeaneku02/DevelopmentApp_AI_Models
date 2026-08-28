@@ -1,0 +1,56 @@
+{
+  "_comment": "Shows belief-key canonicalization inside the manifest lifecycle. A pipeline proposes the raw belief_key 'prefers_evening_exercise_sessions'; the resolve_belief_key step (id 'can_1') runs the backend-authorized canonicalization, which the registry knows aliases to 'higher_adherence_after_work'; the recompute_belief step references $steps.can_1.canonical_key so the belief is stored under the canonical key, never the raw proposed one. run_manifest.py adds no canonicalization logic of its own -- it only passes the authorized canonical_key through. Run with: python tools/run_manifest.py --db out.sqlite3 --manifest tools/manifests/canonicalized_after_work_workout.json",
+  "steps": [
+    {
+      "type": "add_user_event",
+      "user_id": "usr_31",
+      "event_id": "evt_3001",
+      "event_type": "goal_completed",
+      "source": "app",
+      "timestamp": "2026-08-21T18:00:00Z",
+      "structured_data": {"goal": "workout", "scheduled_time": "17:00", "completed_time": "17:20"}
+    },
+    {
+      "type": "add_user_observation",
+      "observation_id": "obs_3001",
+      "user_id": "usr_31",
+      "event_id": "evt_3001",
+      "category": "routine",
+      "observation": "User completed an after-work workout.",
+      "importance": 0.6,
+      "confidence": 0.6,
+      "created_at": "2026-08-21T18:00:00Z"
+    },
+    {
+      "type": "add_belief_evidence",
+      "evidence_id": "bev_3001",
+      "observation_id": "obs_3001",
+      "belief_id": "bel_3001",
+      "belief_type": "behavioral_tendency",
+      "direction": "support",
+      "source_type": "recorded_event",
+      "context_key": "fitness",
+      "strength": 0.9,
+      "model_version": "demo-manifest-0.1",
+      "created_at": "2026-08-21T18:00:00Z"
+    },
+    {
+      "type": "resolve_belief_key",
+      "id": "can_1",
+      "canonicalization_id": "can_3001",
+      "user_id": "usr_31",
+      "belief_type": "behavioral_tendency",
+      "proposed_key": "prefers_evening_exercise_sessions",
+      "authorized_at": "2026-08-22T18:00:00Z"
+    },
+    {
+      "type": "recompute_belief",
+      "belief_id": "bel_3001",
+      "user_id": "usr_31",
+      "belief_type": "behavioral_tendency",
+      "belief_key": "$steps.can_1.canonical_key",
+      "belief_value_json": true,
+      "as_of": "2026-08-22T18:00:00Z"
+    }
+  ]
+}
