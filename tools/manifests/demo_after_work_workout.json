@@ -1,0 +1,142 @@
+{
+  "_comment": "Manifest form of tools/demo_user_model.py's own scenario: three after-work workout completions build a higher_adherence_after_work belief, all backing evidence is then invalidated, and a fresh recompute resets it to confidence=0.0/status=outdated. Run with: python tools/run_manifest.py --db out.sqlite3 --manifest tools/manifests/demo_after_work_workout.json",
+  "steps": [
+    {
+      "type": "add_user_event",
+      "user_id": "usr_17",
+      "event_id": "evt_2001",
+      "event_type": "goal_completed",
+      "source": "app",
+      "timestamp": "2026-08-17T18:00:00Z",
+      "structured_data": {"goal": "workout", "scheduled_time": "17:00", "completed_time": "17:20"}
+    },
+    {
+      "type": "add_user_event",
+      "user_id": "usr_17",
+      "event_id": "evt_2002",
+      "event_type": "goal_completed",
+      "source": "app",
+      "timestamp": "2026-08-19T18:00:00Z",
+      "structured_data": {"goal": "workout", "scheduled_time": "17:00", "completed_time": "17:20"}
+    },
+    {
+      "type": "add_user_event",
+      "user_id": "usr_17",
+      "event_id": "evt_2003",
+      "event_type": "goal_completed",
+      "source": "app",
+      "timestamp": "2026-08-21T18:00:00Z",
+      "structured_data": {"goal": "workout", "scheduled_time": "17:00", "completed_time": "17:20"}
+    },
+    {
+      "type": "add_user_observation",
+      "observation_id": "obs_2001",
+      "user_id": "usr_17",
+      "event_id": "evt_2001",
+      "category": "routine",
+      "observation": "User completed an after-work workout.",
+      "importance": 0.6,
+      "confidence": 0.6,
+      "created_at": "2026-08-17T18:00:00Z"
+    },
+    {
+      "type": "add_user_observation",
+      "observation_id": "obs_2002",
+      "user_id": "usr_17",
+      "event_id": "evt_2002",
+      "category": "routine",
+      "observation": "User completed an after-work workout.",
+      "importance": 0.6,
+      "confidence": 0.6,
+      "created_at": "2026-08-19T18:00:00Z"
+    },
+    {
+      "type": "add_user_observation",
+      "observation_id": "obs_2003",
+      "user_id": "usr_17",
+      "event_id": "evt_2003",
+      "category": "routine",
+      "observation": "User completed an after-work workout.",
+      "importance": 0.6,
+      "confidence": 0.6,
+      "created_at": "2026-08-21T18:00:00Z"
+    },
+    {
+      "type": "add_belief_evidence",
+      "evidence_id": "bev_2001",
+      "observation_id": "obs_2001",
+      "belief_id": "bel_2001",
+      "belief_type": "behavioral_tendency",
+      "direction": "support",
+      "source_type": "recorded_event",
+      "context_key": "fitness",
+      "strength": 0.9,
+      "model_version": "demo-manifest-0.1",
+      "created_at": "2026-08-17T18:00:00Z"
+    },
+    {
+      "type": "add_belief_evidence",
+      "evidence_id": "bev_2002",
+      "observation_id": "obs_2002",
+      "belief_id": "bel_2001",
+      "belief_type": "behavioral_tendency",
+      "direction": "support",
+      "source_type": "recorded_event",
+      "context_key": "fitness",
+      "strength": 0.9,
+      "model_version": "demo-manifest-0.1",
+      "created_at": "2026-08-19T18:00:00Z"
+    },
+    {
+      "type": "add_belief_evidence",
+      "evidence_id": "bev_2003",
+      "observation_id": "obs_2003",
+      "belief_id": "bel_2001",
+      "belief_type": "behavioral_tendency",
+      "direction": "support",
+      "source_type": "recorded_event",
+      "context_key": "fitness",
+      "strength": 0.9,
+      "model_version": "demo-manifest-0.1",
+      "created_at": "2026-08-21T18:00:00Z"
+    },
+    {
+      "type": "recompute_belief",
+      "belief_id": "bel_2001",
+      "user_id": "usr_17",
+      "belief_type": "behavioral_tendency",
+      "belief_key": "higher_adherence_after_work",
+      "belief_value_json": true,
+      "as_of": "2026-08-22T18:00:00Z"
+    },
+    {
+      "type": "invalidate_belief_evidence",
+      "evidence_id": "bev_2001",
+      "reason": "deletion",
+      "invalidated_at": "2026-08-22T18:00:00Z"
+    },
+    {
+      "type": "invalidate_belief_evidence",
+      "evidence_id": "bev_2002",
+      "reason": "deletion",
+      "invalidated_at": "2026-08-22T18:00:00Z"
+    },
+    {
+      "type": "invalidate_belief_evidence",
+      "evidence_id": "bev_2003",
+      "reason": "deletion",
+      "invalidated_at": "2026-08-22T18:00:00Z"
+    },
+    {
+      "type": "recompute_belief",
+      "belief_id": "bel_2001",
+      "user_id": "usr_17",
+      "belief_type": "behavioral_tendency",
+      "belief_key": "higher_adherence_after_work",
+      "belief_value_json": true,
+      "as_of": "2026-08-22T18:00:00Z",
+      "recompute_reason": "deletion",
+      "allow_no_evidence": true
+    }
+  ]
+}
