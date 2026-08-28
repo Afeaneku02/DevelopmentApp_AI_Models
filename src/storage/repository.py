@@ -46,7 +46,14 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from src.beliefs.models import BeliefEvidence, UserBelief, active_evidence, invalidate_evidence
+from src.beliefs.models import (
+    BeliefEvidence,
+    UserBelief,
+    active_evidence,
+    find_duplicate_evidence,
+    invalidate_evidence,
+    suppress_duplicate_evidence,
+)
 from src.common.provenance import validate_belief_evidence_provenance, validate_observation_provenance
 from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
@@ -361,6 +368,46 @@ class Repository:
             )
         self._lock_latest_belief(user_id=current.user_id, belief_id=current.belief_id)
         return updated
+
+    def suppress_duplicate_evidence(self, *, user_id: str, belief_id: str, reason: str) -> list[BeliefEvidence]:
+        """Finds and marks duplicate evidence rows for one (user_id,
+        belief_id) scope via ``find_duplicate_evidence()``/
+        ``suppress_duplicate_evidence()`` (the same backend-owned,
+        non-destructive marking used everywhere else in this module -- see
+        the module docstring for why "active" and "duplicate" are never
+        redefined at the SQL level). Returns only the rows newly marked by
+        this call, in the same transaction; a row ``find_duplicate_evidence()``
+        would still flag but that is already marked is left untouched and
+        excluded from the return value, so calling this again after a prior
+        call (or after nothing changed) is a safe no-op rather than a second
+        write.
+
+        Also fail-closes the belief this evidence belongs to, exactly as
+        ``mark_evidence_inactive()`` does: suppressing evidence changes what
+        ``active_evidence()`` returns for this scope just as invalidating it
+        does, so the same ``locked_until_recompute`` guarantee applies -- see
+        ``_lock_latest_belief()``. Only runs when at least one row was
+        actually newly suppressed, so a call that finds nothing to do never
+        appends a redundant locked copy of an already-current belief.
+        """
+        all_evidence = self.list_evidence(user_id=user_id, belief_id=belief_id)
+        duplicates = find_duplicate_evidence(all_evidence)
+
+        newly_suppressed: list[BeliefEvidence] = []
+        with self._conn:
+            for row in duplicates:
+                if row.is_duplicate_suppressed:
+                    continue
+                updated = suppress_duplicate_evidence(row, reason=reason)
+                self._conn.execute(
+                    "UPDATE belief_evidence SET data = ? WHERE evidence_id = ?",
+                    (updated.model_dump_json(), updated.evidence_id),
+                )
+                newly_suppressed.append(updated)
+
+        if newly_suppressed:
+            self._lock_latest_belief(user_id=user_id, belief_id=belief_id)
+        return newly_suppressed
 
     def _lock_latest_belief(self, *, user_id: str, belief_id: str) -> None:
         """If a belief has been saved for this scope and is not already

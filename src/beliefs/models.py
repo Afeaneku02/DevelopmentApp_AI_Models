@@ -338,6 +338,91 @@ def active_evidence(evidence_items: list[BeliefEvidence]) -> list[BeliefEvidence
     return [item for item in evidence_items if item.is_active and not item.is_duplicate_suppressed]
 
 
+DEFAULT_DUPLICATE_SUPPRESSION_REASON = "duplicate_evidence"
+
+
+def suppress_duplicate_evidence(
+    evidence: BeliefEvidence, *, reason: str = DEFAULT_DUPLICATE_SUPPRESSION_REASON
+) -> BeliefEvidence:
+    """Marks a persisted ``BeliefEvidence`` row as a duplicate (blueprint
+    section 6.0.1's ``is_duplicate_suppressed``/``suppression_reason``
+    fields) without deleting it -- the same non-destructive, backend-owned
+    marking pattern as this module's own ``invalidate_evidence()`` (its
+    sibling for the ``is_active`` flag). A suppressed row remains in the
+    ledger for audit; ``active_evidence()`` is what actually excludes it
+    from scoring, exactly as it already excludes inactive rows.
+
+    Never reachable from a proposal or model/LLM output: ``BeliefEvidenceProposal``
+    has no ``is_duplicate_suppressed`` or ``suppression_reason`` field at
+    all, and ``VersionedModel``'s ``extra="forbid"`` rejects a payload that
+    tries to smuggle one in -- only backend code operating on an
+    already-authorized ``BeliefEvidence`` (see ``find_duplicate_evidence()``
+    below, or ``Repository.suppress_duplicate_evidence()``) can call this.
+    """
+    return evidence.model_copy(update={"is_duplicate_suppressed": True, "suppression_reason": reason})
+
+
+def find_duplicate_evidence(evidence_items: list[BeliefEvidence]) -> list[BeliefEvidence]:
+    """Deterministically identifies which currently scoring-eligible rows in
+    ``evidence_items`` are redundant duplicates of another currently
+    scoring-eligible row representing the same underlying claim, and returns
+    exactly those rows -- never the one row each duplicate group keeps.
+
+    Two rows are duplicates of each other only when they share every one of:
+    ``user_id``, ``belief_id``, ``independence_group`` (already the
+    authoritative "these rows are not independent of each other" grouping
+    key set at authorization time by ``authorize_evidence()``, itself
+    derived from ``source_event_ids`` -- reused here rather than a second,
+    parallel definition of "same source events"), ``direction``,
+    ``source_type``, and ``context_key``. All six must match: two rows about
+    the same event but opposite ``direction``, or the same event feeding two
+    different beliefs, are independent claims that happen to share
+    provenance, not duplicates -- suppressing either would itself be exactly
+    the kind of confidence corruption this function exists to prevent.
+
+    Only rows ``active_evidence()`` itself would treat as scoring-eligible
+    (``is_active`` and not already ``is_duplicate_suppressed``) are
+    considered -- reusing that exact predicate rather than a second, looser
+    one that checked only ``is_active``. Filtering out already-suppressed
+    rows here (not just at the caller) matters for a real lifecycle case:
+    without it, an earlier row that happens to already be suppressed (its
+    ``created_at`` still the earliest in the group) would be treated as the
+    group's canonical "keeper" purely by sort order, and a *never-suppressed*
+    later row in the same group would be flagged as the duplicate instead --
+    leaving the whole group with zero scoring-eligible rows, exactly the
+    confidence corruption this function exists to prevent, not cause. An
+    already-invalidated row needs no such consideration either, since it is
+    already excluded from ``active_evidence()`` regardless of this flag.
+
+    Within each duplicate group, the earliest ``created_at`` (ties broken by
+    ``evidence_id`` for a fully deterministic order) among the *still
+    scoring-eligible* rows is treated as the canonical row and kept off the
+    returned list; every other scoring-eligible row in the group is
+    returned. This makes the function idempotent, but not because its answer
+    ignores suppression state -- the opposite: once a row is suppressed it
+    drops out of consideration entirely, so a second run over the same
+    underlying data returns fewer or zero rows (never the same
+    already-suppressed row again), converging to an empty result exactly
+    when every duplicate has already been dealt with.
+    """
+    eligible_rows = active_evidence(evidence_items)
+    groups: dict[tuple[str, str, str, str, str, str], list[BeliefEvidence]] = {}
+    for item in eligible_rows:
+        key = (
+            item.user_id, item.belief_id, item.independence_group,
+            item.direction.value, item.source_type.value, item.context_key,
+        )
+        groups.setdefault(key, []).append(item)
+
+    duplicates: list[BeliefEvidence] = []
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        ordered = sorted(group, key=lambda row: (row.created_at, row.evidence_id))
+        duplicates.extend(ordered[1:])
+    return duplicates
+
+
 class UserBelief(VersionedModel):
     """Flexible AI-learned knowledge about an individual (blueprint section 5).
 

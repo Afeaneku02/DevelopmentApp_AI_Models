@@ -16,7 +16,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from src.beliefs.models import UserBelief, authorize_evidence
+from src.beliefs.models import UserBelief, authorize_evidence, suppress_duplicate_evidence
 from src.beliefs.propose_evidence import propose_evidence_from_observation_validated
 from src.beliefs.recompute import recompute_belief
 from src.events.models import UserEvent
@@ -326,6 +326,172 @@ class InvalidatedEvidenceLocksTheLatestBeliefTests(RepositoryTestCase):
             "SELECT COUNT(*) FROM user_beliefs WHERE user_id = ? AND belief_id = ?", (USER_ID, BELIEF_ID)
         ).fetchone()
         self.assertEqual(rows[0], 2)  # original + exactly one locked copy
+
+
+class DuplicateEvidenceSuppressionTests(RepositoryTestCase):
+    """Repository.suppress_duplicate_evidence() -- the backend-owned,
+    non-destructive marking that prevents confidence inflation from two
+    belief_evidence rows representing the same underlying claim (blueprint
+    section 6.0.1's is_duplicate_suppressed/suppression_reason fields), and
+    its own fail-closed belief-locking, mirroring mark_evidence_inactive()'s
+    established pattern rather than a second one."""
+
+    def _insert_evidence_for_event(
+        self, *, evidence_id: str, event: UserEvent, created_at: datetime, belief_id: str = BELIEF_ID,
+    ) -> None:
+        """Creates a fresh observation for ``evidence_id`` linked to an
+        already-inserted ``event`` -- multiple evidence rows can legitimately
+        trace back to the same underlying event through different
+        observations, which is exactly the "same source event" duplicate
+        scenario this suppression logic exists to catch."""
+        observation, links = create_observation_from_event(
+            event, observation_id=f"obs_{evidence_id}", category="routine", observation_text="x",
+            importance=0.6, confidence=0.6, created_at=created_at, **VERSION_FIELDS,
+        )
+        self.repo.insert_observation(observation, links)
+        proposal = propose_evidence_from_observation_validated(
+            observation, links, [event], belief_id=belief_id, direction="support",
+            source_type="recorded_event", context_key="fitness", strength=0.9,
+            model_version="pipeline-0.1", belief_type=BELIEF_TYPE, **VERSION_FIELDS,
+        )
+        evidence = authorize_evidence(
+            proposal, evidence_id=evidence_id, created_at=created_at,
+            aggregation_policy_version="evidence-aggregation-0.6",
+        )
+        self.repo.insert_evidence(evidence)
+
+    def test_duplicate_evidence_is_marked_suppressed_and_excluded_from_active_listing(self) -> None:
+        event = _event("evt_1042", timestamp=AS_OF - timedelta(hours=2))
+        self.repo.insert_event(event)
+        self._insert_evidence_for_event(evidence_id="bev_1", event=event, created_at=AS_OF - timedelta(hours=2))
+        self._insert_evidence_for_event(evidence_id="bev_2", event=event, created_at=AS_OF - timedelta(hours=1))
+
+        newly_suppressed = self.repo.suppress_duplicate_evidence(
+            user_id=USER_ID, belief_id=BELIEF_ID, reason="duplicate_evidence",
+        )
+
+        self.assertEqual([row.evidence_id for row in newly_suppressed], ["bev_2"])
+        active = self.repo.list_active_evidence(user_id=USER_ID, belief_id=BELIEF_ID)
+        self.assertEqual([row.evidence_id for row in active], ["bev_1"])
+
+        # The suppressed row remains a fully auditable ledger entry.
+        audited = self.repo.get_evidence("bev_2")
+        self.assertTrue(audited.is_duplicate_suppressed)
+        self.assertEqual(audited.suppression_reason, "duplicate_evidence")
+        self.assertTrue(audited.is_active)
+
+    def test_re_running_suppression_is_idempotent(self) -> None:
+        event = _event("evt_1042", timestamp=AS_OF - timedelta(hours=2))
+        self.repo.insert_event(event)
+        self._insert_evidence_for_event(evidence_id="bev_1", event=event, created_at=AS_OF - timedelta(hours=2))
+        self._insert_evidence_for_event(evidence_id="bev_2", event=event, created_at=AS_OF - timedelta(hours=1))
+
+        first_run = self.repo.suppress_duplicate_evidence(
+            user_id=USER_ID, belief_id=BELIEF_ID, reason="duplicate_evidence",
+        )
+        self.assertEqual(len(first_run), 1)
+
+        second_run = self.repo.suppress_duplicate_evidence(
+            user_id=USER_ID, belief_id=BELIEF_ID, reason="duplicate_evidence",
+        )
+        self.assertEqual(second_run, [])
+
+        # Still exactly one suppressed row, not double-marked or duplicated.
+        all_evidence = self.repo.list_evidence(user_id=USER_ID, belief_id=BELIEF_ID)
+        suppressed_ids = [row.evidence_id for row in all_evidence if row.is_duplicate_suppressed]
+        self.assertEqual(suppressed_ids, ["bev_2"])
+
+    def test_no_duplicates_found_leaves_the_belief_unlocked_and_untouched(self) -> None:
+        event = _event("evt_1042", timestamp=AS_OF - timedelta(hours=2))
+        self.repo.insert_event(event)
+        self._insert_evidence_for_event(evidence_id="bev_1", event=event, created_at=AS_OF - timedelta(hours=2))
+        belief = recompute_belief(
+            belief_id=BELIEF_ID, user_id=USER_ID, belief_type=BELIEF_TYPE, belief_key=BELIEF_KEY,
+            belief_value=True, evidence=self.repo.list_active_evidence(user_id=USER_ID, belief_id=BELIEF_ID),
+            as_of=AS_OF, first_observed=AS_OF - timedelta(hours=2), **VERSION_FIELDS,
+        )
+        self.repo.save_belief(belief)
+
+        newly_suppressed = self.repo.suppress_duplicate_evidence(
+            user_id=USER_ID, belief_id=BELIEF_ID, reason="duplicate_evidence",
+        )
+
+        self.assertEqual(newly_suppressed, [])
+        latest = self.repo.get_latest_belief(user_id=USER_ID, belief_id=BELIEF_ID)
+        self.assertFalse(latest.locked_until_recompute)
+        # No redundant copy was appended.
+        rows = self.repo._conn.execute(
+            "SELECT COUNT(*) FROM user_beliefs WHERE user_id = ? AND belief_id = ?", (USER_ID, BELIEF_ID)
+        ).fetchone()
+        self.assertEqual(rows[0], 1)
+
+    def test_suppressing_a_duplicate_locks_the_latest_belief(self) -> None:
+        event = _event("evt_1042", timestamp=AS_OF - timedelta(hours=2))
+        self.repo.insert_event(event)
+        self._insert_evidence_for_event(evidence_id="bev_1", event=event, created_at=AS_OF - timedelta(hours=2))
+        self._insert_evidence_for_event(evidence_id="bev_2", event=event, created_at=AS_OF - timedelta(hours=1))
+        belief = recompute_belief(
+            belief_id=BELIEF_ID, user_id=USER_ID, belief_type=BELIEF_TYPE, belief_key=BELIEF_KEY,
+            belief_value=True, evidence=self.repo.list_active_evidence(user_id=USER_ID, belief_id=BELIEF_ID),
+            as_of=AS_OF, first_observed=AS_OF - timedelta(hours=2), **VERSION_FIELDS,
+        )
+        self.repo.save_belief(belief)
+        self.assertFalse(belief.locked_until_recompute)
+
+        self.repo.suppress_duplicate_evidence(user_id=USER_ID, belief_id=BELIEF_ID, reason="duplicate_evidence")
+
+        latest = self.repo.get_latest_belief(user_id=USER_ID, belief_id=BELIEF_ID)
+        self.assertTrue(latest.locked_until_recompute)
+
+    def test_different_belief_is_not_suppressed(self) -> None:
+        event = _event("evt_1042", timestamp=AS_OF - timedelta(hours=2))
+        self.repo.insert_event(event)
+        self._insert_evidence_for_event(
+            evidence_id="bev_1", event=event, created_at=AS_OF - timedelta(hours=2), belief_id="bel_1",
+        )
+        self._insert_evidence_for_event(
+            evidence_id="bev_2", event=event, created_at=AS_OF - timedelta(hours=1), belief_id="bel_2",
+        )
+
+        newly_suppressed = self.repo.suppress_duplicate_evidence(
+            user_id=USER_ID, belief_id="bel_1", reason="duplicate_evidence",
+        )
+        self.assertEqual(newly_suppressed, [])
+
+    def test_an_already_suppressed_earlier_row_does_not_cause_a_never_suppressed_later_row_to_be_suppressed(
+        self,
+    ) -> None:
+        """Regression test for the lifecycle bug find_duplicate_evidence()
+        used to have: an already-suppressed row (even the earliest by
+        created_at) must never be treated as a duplicate group's canonical
+        keeper -- that would strip the group down to zero scoring-eligible
+        rows by suppressing the one row that was never suppressed."""
+        event = _event("evt_1042", timestamp=AS_OF - timedelta(hours=2))
+        self.repo.insert_event(event)
+        self._insert_evidence_for_event(evidence_id="bev_1", event=event, created_at=AS_OF - timedelta(hours=2))
+
+        # Simulate bev_1 having already been suppressed by some earlier
+        # process (e.g. manual curation, or a run of this same method before
+        # a never-suppressed duplicate existed yet) -- bypassing
+        # suppress_duplicate_evidence()'s normal path on purpose, the same
+        # way tests/event_intake/test_add_belief_evidence.py simulates data
+        # that reached the database some other way.
+        already_suppressed = suppress_duplicate_evidence(self.repo.get_evidence("bev_1"), reason="manual_review")
+        with self.repo._conn:
+            self.repo._conn.execute(
+                "UPDATE belief_evidence SET data = ? WHERE evidence_id = ?",
+                (already_suppressed.model_dump_json(), "bev_1"),
+            )
+
+        self._insert_evidence_for_event(evidence_id="bev_2", event=event, created_at=AS_OF - timedelta(hours=1))
+
+        newly_suppressed = self.repo.suppress_duplicate_evidence(
+            user_id=USER_ID, belief_id=BELIEF_ID, reason="duplicate_evidence",
+        )
+
+        self.assertEqual(newly_suppressed, [])
+        active = self.repo.list_active_evidence(user_id=USER_ID, belief_id=BELIEF_ID)
+        self.assertEqual([row.evidence_id for row in active], ["bev_2"])
 
 
 class NoStaleBeliefAfterInvalidationTests(RepositoryTestCase):
