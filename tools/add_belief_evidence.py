@@ -17,6 +17,22 @@ record entirely, and ``authorize_evidence()`` is the only place
 ``authorized_aggregation_mode`` can become anything other than
 ``leaf_default`` (never this CLI's own judgment call).
 
+Controlled evidence replacement: ``--proposed-aggregation-mode
+aggregate_replacement`` lets an operator *propose* that new evidence replace
+one or more existing rows (``--replaces-evidence-id``, repeatable), and
+``--backend-validation-passed`` stands in for a real backend policy
+component asserting the replacement is legitimate -- see
+``authorize_evidence()``'s own docstring for why that flag is scaffold-only,
+not a production authorization guarantee. Either way, this CLI never decides
+the outcome itself: it loads the replaced rows from the database and hands
+them to ``authorize_evidence(..., replaced_evidence=...)``, which runs its
+own deterministic checks (same user, same belief, coverage not narrowed) and
+may still refuse the replacement (falling back to ``leaf_default`` with
+``aggregation_review_status=rejected``) even when
+``--backend-validation-passed`` is given. This CLI only ever creates the new
+replacement evidence row -- it does not suppress, invalidate, or otherwise
+modify the rows named in ``--replaces-evidence-id``.
+
 This is belief-evidence intake only (blueprint section 6): it never
 recomputes or saves a ``UserBelief``. That is a separate, already-built
 pipeline step (``src.beliefs.recompute.recompute_belief``) that a caller
@@ -44,7 +60,7 @@ from pydantic import ValidationError  # noqa: E402
 
 from src.beliefs.models import authorize_evidence  # noqa: E402
 from src.beliefs.propose_evidence import propose_evidence_from_observation_validated  # noqa: E402
-from src.common.enums import BeliefType, Direction, SourceType  # noqa: E402
+from src.common.enums import AggregationMode, BeliefType, Direction, SourceType  # noqa: E402
 from src.storage.repository import Repository  # noqa: E402
 
 # Matches the version literals used elsewhere in this project (e.g.
@@ -86,6 +102,28 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--created-at", default=None, dest="created_at",
         help="ISO 8601 datetime for the evidence; defaults to now (UTC).",
     )
+    parser.add_argument(
+        "--proposed-aggregation-mode", default="leaf_default", dest="proposed_aggregation_mode",
+        choices=[member.value for member in AggregationMode],
+        help="Propose aggregate_replacement to request replacing existing evidence (default: leaf_default).",
+    )
+    parser.add_argument(
+        "--replaces-evidence-id", action="append", default=[], dest="replaces_evidence_id",
+        help=(
+            "An evidence_id this new row proposes to replace. Repeatable. Only allowed "
+            "with --proposed-aggregation-mode aggregate_replacement, where at least one is required."
+        ),
+    )
+    parser.add_argument(
+        "--backend-validation-passed", action="store_true", dest="backend_validation_passed",
+        help=(
+            "Assert that a real backend policy check approved this replacement (see "
+            "authorize_evidence()'s docstring: this is scaffold-only, not a production "
+            "authorization guarantee). Only allowed with --proposed-aggregation-mode "
+            "aggregate_replacement; even then, authorize_evidence() may still refuse the "
+            "replacement based on its own deterministic checks."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -110,6 +148,43 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     else:
         created_at = datetime.now(timezone.utc)
+
+    is_replacement = args.proposed_aggregation_mode == AggregationMode.AGGREGATE_REPLACEMENT.value
+    if not is_replacement:
+        if args.replaces_evidence_id:
+            print(
+                "--replaces-evidence-id is only allowed with "
+                "--proposed-aggregation-mode aggregate_replacement.",
+                file=sys.stderr,
+            )
+            return 1
+        if args.backend_validation_passed:
+            print(
+                "--backend-validation-passed is only allowed with "
+                "--proposed-aggregation-mode aggregate_replacement.",
+                file=sys.stderr,
+            )
+            return 1
+    elif not args.replaces_evidence_id:
+        print(
+            "At least one --replaces-evidence-id is required with "
+            "--proposed-aggregation-mode aggregate_replacement.",
+            file=sys.stderr,
+        )
+        return 1
+    else:
+        duplicate_replaced_ids = sorted({
+            evidence_id for evidence_id in set(args.replaces_evidence_id)
+            if args.replaces_evidence_id.count(evidence_id) > 1
+        })
+        if duplicate_replaced_ids:
+            print(
+                "Duplicate --replaces-evidence-id value(s): "
+                + ", ".join(repr(evidence_id) for evidence_id in duplicate_replaced_ids)
+                + ". Each --replaces-evidence-id must be given at most once.",
+                file=sys.stderr,
+            )
+            return 1
 
     repo = Repository.at_path(args.db)
     try:
@@ -145,6 +220,24 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 1
 
+        replaced_evidence = None
+        if is_replacement:
+            replaced_evidence = {}
+            missing_replaced_ids = []
+            for replaced_id in args.replaces_evidence_id:  # duplicates already rejected above
+                replaced_row = repo.get_evidence(replaced_id)
+                if replaced_row is None:
+                    missing_replaced_ids.append(replaced_id)
+                else:
+                    replaced_evidence[replaced_id] = replaced_row
+            if missing_replaced_ids:
+                for replaced_id in missing_replaced_ids:
+                    print(
+                        f"Unknown --replaces-evidence-id {replaced_id!r}: not found in {args.db!r}.",
+                        file=sys.stderr,
+                    )
+                return 1
+
         try:
             proposal = propose_evidence_from_observation_validated(
                 observation, links, events,
@@ -155,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
                 strength=args.strength,
                 model_version=args.model_version,
                 belief_type=BeliefType(args.belief_type),
+                proposed_aggregation_mode=AggregationMode(args.proposed_aggregation_mode),
+                replaces_evidence_ids=args.replaces_evidence_id,
                 **VERSION_FIELDS,
             )
         except ValidationError as exc:
@@ -167,6 +262,8 @@ def main(argv: list[str] | None = None) -> int:
         evidence = authorize_evidence(
             proposal, evidence_id=args.evidence_id, created_at=created_at,
             aggregation_policy_version=AGGREGATION_POLICY_VERSION,
+            backend_validation_passed=args.backend_validation_passed,
+            replaced_evidence=replaced_evidence,
         )
 
         try:
