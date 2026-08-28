@@ -22,6 +22,9 @@ _RUN_MANIFEST_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "run_mani
 _DEMO_MANIFEST_PATH = (
     Path(__file__).resolve().parents[2] / "tools" / "manifests" / "demo_after_work_workout.json"
 )
+_CANONICALIZED_MANIFEST_PATH = (
+    Path(__file__).resolve().parents[2] / "tools" / "manifests" / "canonicalized_after_work_workout.json"
+)
 
 
 def _run_manifest(args: list[str]) -> subprocess.CompletedProcess:
@@ -327,6 +330,250 @@ class DemoManifestEndToEndTests(unittest.TestCase):
             self.assertEqual(belief.status.value, "outdated")
             self.assertFalse(belief.locked_until_recompute)
             self.assertEqual(active, [])
+
+
+def _evidence_prefix_steps(*, user_id: str, belief_id: str) -> list[dict]:
+    """The minimal add_user_event -> add_user_observation -> add_belief_evidence
+    chain that gives a belief one active evidence row, so a later
+    recompute_belief step has something to score."""
+    return [
+        {
+            "type": "add_user_event", "user_id": user_id, "event_id": "evt_c1",
+            "event_type": "goal_completed", "source": "app",
+        },
+        {
+            "type": "add_user_observation", "observation_id": "obs_c1", "user_id": user_id,
+            "event_id": "evt_c1", "category": "routine", "observation": "did an after-work workout",
+            "importance": 0.6, "confidence": 0.6,
+        },
+        {
+            "type": "add_belief_evidence", "evidence_id": "bev_c1", "observation_id": "obs_c1",
+            "belief_id": belief_id, "belief_type": "behavioral_tendency", "direction": "support",
+            "source_type": "recorded_event", "context_key": "fitness", "strength": 0.9,
+            "model_version": "test-0.1",
+        },
+    ]
+
+
+class ResolveBeliefKeyStepTests(unittest.TestCase):
+    """resolve_belief_key wired into run_manifest.py as orchestration only:
+    the step runs the already-tested CLI, its authorized canonical_key can be
+    referenced by a later step, and a raw proposed key is never silently used
+    when a canonical one was decided."""
+
+    def test_resolve_belief_key_step_runs_and_is_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            manifest_path = _write_manifest(tmp, [
+                {
+                    "type": "resolve_belief_key", "id": "can_1", "canonicalization_id": "can_x1",
+                    "user_id": "usr_1", "belief_type": "behavioral_tendency",
+                    "proposed_key": "prefers_evening_exercise_sessions",
+                },
+            ])
+
+            result = _run_manifest(["--db", db_path, "--manifest", manifest_path])
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            repo = Repository.at_path(db_path)
+            try:
+                stored = repo.get_latest_belief_key_canonicalization(
+                    user_id="usr_1", belief_type="behavioral_tendency",
+                    proposed_key="prefers_evening_exercise_sessions",
+                )
+            finally:
+                repo.close()
+            self.assertIsNotNone(stored)
+            self.assertEqual(stored.canonicalization_id, "can_x1")
+            self.assertEqual(stored.canonical_key, "higher_adherence_after_work")
+            self.assertEqual(stored.decision.value, "alias")
+
+    def test_a_later_step_references_the_authorized_canonical_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            manifest_path = _write_manifest(tmp, [
+                *_evidence_prefix_steps(user_id="usr_1", belief_id="bel_1"),
+                {
+                    "type": "resolve_belief_key", "id": "can_1", "canonicalization_id": "can_x1",
+                    "user_id": "usr_1", "belief_type": "behavioral_tendency",
+                    "proposed_key": "prefers_evening_exercise_sessions",
+                },
+                {
+                    "type": "recompute_belief", "belief_id": "bel_1", "user_id": "usr_1",
+                    "belief_type": "behavioral_tendency",
+                    "belief_key": "$steps.can_1.canonical_key", "belief_value_json": True,
+                },
+            ])
+
+            result = _run_manifest(["--db", db_path, "--manifest", manifest_path])
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            repo = Repository.at_path(db_path)
+            try:
+                belief = repo.get_latest_belief(user_id="usr_1", belief_id="bel_1")
+            finally:
+                repo.close()
+            self.assertIsNotNone(belief)
+            self.assertEqual(belief.belief_key, "higher_adherence_after_work")
+
+    def test_manifest_does_not_silently_use_the_proposed_key_when_a_canonical_key_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            manifest_path = _write_manifest(tmp, [
+                *_evidence_prefix_steps(user_id="usr_1", belief_id="bel_1"),
+                {
+                    "type": "resolve_belief_key", "id": "can_1", "canonicalization_id": "can_x1",
+                    "user_id": "usr_1", "belief_type": "behavioral_tendency",
+                    "proposed_key": "prefers_evening_exercise_sessions",
+                },
+                {
+                    "type": "recompute_belief", "belief_id": "bel_1", "user_id": "usr_1",
+                    "belief_type": "behavioral_tendency",
+                    "belief_key": "$steps.can_1.canonical_key", "belief_value_json": True,
+                },
+            ])
+
+            result = _run_manifest(["--db", db_path, "--manifest", manifest_path])
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            repo = Repository.at_path(db_path)
+            try:
+                belief = repo.get_latest_belief(user_id="usr_1", belief_id="bel_1")
+                # No belief was ever stored under the raw proposed key.
+                under_proposed = repo.list_latest_beliefs(user_id="usr_1")
+            finally:
+                repo.close()
+            self.assertNotEqual(belief.belief_key, "prefers_evening_exercise_sessions")
+            self.assertEqual(
+                [b.belief_key for b in under_proposed], ["higher_adherence_after_work"],
+            )
+
+    def test_unknown_key_keeps_separate_and_passes_its_own_key_through(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            manifest_path = _write_manifest(tmp, [
+                *_evidence_prefix_steps(user_id="usr_1", belief_id="bel_1"),
+                {
+                    "type": "resolve_belief_key", "id": "can_1", "canonicalization_id": "can_x1",
+                    "user_id": "usr_1", "belief_type": "behavioral_tendency",
+                    "proposed_key": "a_totally_novel_key",
+                },
+                {
+                    "type": "recompute_belief", "belief_id": "bel_1", "user_id": "usr_1",
+                    "belief_type": "behavioral_tendency",
+                    "belief_key": "$steps.can_1.canonical_key", "belief_value_json": True,
+                },
+            ])
+
+            result = _run_manifest(["--db", db_path, "--manifest", manifest_path])
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            repo = Repository.at_path(db_path)
+            try:
+                stored = repo.get_latest_belief_key_canonicalization(
+                    user_id="usr_1", belief_type="behavioral_tendency", proposed_key="a_totally_novel_key",
+                )
+                belief = repo.get_latest_belief(user_id="usr_1", belief_id="bel_1")
+            finally:
+                repo.close()
+            self.assertEqual(stored.decision.value, "keep_separate")
+            self.assertEqual(stored.canonical_key, "a_totally_novel_key")
+            self.assertEqual(belief.belief_key, "a_totally_novel_key")
+
+    def test_reference_to_an_unknown_step_id_fails_clearly_and_stops_the_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            manifest_path = _write_manifest(tmp, [
+                *_evidence_prefix_steps(user_id="usr_1", belief_id="bel_1"),
+                {
+                    "type": "recompute_belief", "belief_id": "bel_1", "user_id": "usr_1",
+                    "belief_type": "behavioral_tendency",
+                    "belief_key": "$steps.can_typo.canonical_key", "belief_value_json": True,
+                },
+                {
+                    "type": "add_user_event", "user_id": "usr_1", "event_id": "evt_never",
+                    "event_type": "goal_completed", "source": "app",
+                },
+            ])
+
+            result = _run_manifest(["--db", db_path, "--manifest", manifest_path])
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("$steps.can_typo.canonical_key", result.stderr)
+            self.assertIn("Manifest stopped at step 4", result.stderr)
+
+            repo = Repository.at_path(db_path)
+            try:
+                self.assertIsNone(repo.get_latest_belief(user_id="usr_1", belief_id="bel_1"))
+                self.assertIsNone(repo.get_event("evt_never"))
+            finally:
+                repo.close()
+
+    def test_reference_to_a_missing_field_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            manifest_path = _write_manifest(tmp, [
+                {
+                    "type": "resolve_belief_key", "id": "can_1", "canonicalization_id": "can_x1",
+                    "user_id": "usr_1", "belief_type": "behavioral_tendency",
+                    "proposed_key": "prefers_evening_exercise_sessions",
+                },
+                {
+                    "type": "recompute_belief", "belief_id": "bel_1", "user_id": "usr_1",
+                    "belief_type": "behavioral_tendency",
+                    "belief_key": "$steps.can_1.not_a_field", "belief_value_json": True,
+                },
+            ])
+
+            result = _run_manifest(["--db", db_path, "--manifest", manifest_path])
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("no field 'not_a_field'", result.stderr)
+            self.assertIn("Manifest stopped at step 2", result.stderr)
+
+    def test_duplicate_step_id_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            manifest_path = _write_manifest(tmp, [
+                {
+                    "type": "resolve_belief_key", "id": "can_1", "canonicalization_id": "can_x1",
+                    "user_id": "usr_1", "belief_type": "behavioral_tendency", "proposed_key": "key_a",
+                },
+                {
+                    "type": "resolve_belief_key", "id": "can_1", "canonicalization_id": "can_x2",
+                    "user_id": "usr_1", "belief_type": "behavioral_tendency", "proposed_key": "key_b",
+                },
+            ])
+
+            result = _run_manifest(["--db", db_path, "--manifest", manifest_path])
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("duplicate step id", result.stderr)
+
+
+class CanonicalizedManifestEndToEndTests(unittest.TestCase):
+    def test_shipped_canonicalized_manifest_stores_the_canonical_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+
+            result = _run_manifest(["--db", db_path, "--manifest", str(_CANONICALIZED_MANIFEST_PATH)])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("All 5 step(s) completed successfully.", result.stdout)
+
+            repo = Repository.at_path(db_path)
+            try:
+                belief = repo.get_latest_belief(user_id="usr_31", belief_id="bel_3001")
+                canonicalization = repo.get_latest_belief_key_canonicalization(
+                    user_id="usr_31", belief_type="behavioral_tendency",
+                    proposed_key="prefers_evening_exercise_sessions",
+                )
+            finally:
+                repo.close()
+            self.assertIsNotNone(belief)
+            self.assertEqual(belief.belief_key, "higher_adherence_after_work")
+            self.assertEqual(canonicalization.canonical_key, "higher_adherence_after_work")
+            self.assertEqual(canonicalization.decision.value, "alias")
 
 
 if __name__ == "__main__":
