@@ -60,13 +60,15 @@ def _running_server(db_path: str):
         thread.join(timeout=5)
 
 
-def _get(url: str) -> tuple[int, str]:
-    # A transient socket abort (WinError 10053 under load) is not a real
-    # failure of a read-only GET -- retry a couple of times before giving up.
+def _request(url: str, *, method: str = "GET", data: bytes | None = None) -> tuple[int, str]:
+    """One HTTP request, retrying transient socket aborts (WinError 10053
+    under load is not a real failure). Returns ``(status_code, body)``;
+    an HTTP error status (e.g. 405) is a normal return, not an exception."""
+    request = urllib.request.Request(url, method=method, data=data)
     last_error: OSError | None = None
     for attempt in range(4):
         try:
-            with urllib.request.urlopen(url, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8")
@@ -75,7 +77,11 @@ def _get(url: str) -> tuple[int, str]:
         except (urllib.error.URLError, ConnectionError, OSError) as exc:
             last_error = exc
             time.sleep(0.1 * (attempt + 1))
-    raise AssertionError(f"GET {url} failed after retries: {last_error!r}")
+    raise AssertionError(f"{method} {url} failed after retries: {last_error!r}")
+
+
+def _get(url: str) -> tuple[int, str]:
+    return _request(url)
 
 
 class ServesHtmlFromARealDatabaseTests(unittest.TestCase):
@@ -149,14 +155,7 @@ class ReadOnlyRouteTests(unittest.TestCase):
             before = Path(db_path).read_bytes()
 
             with _running_server(db_path) as base:
-                request = urllib.request.Request(base + "/", method="POST", data=b"{}")
-                try:
-                    with urllib.request.urlopen(request, timeout=5) as response:
-                        status = response.status
-                except urllib.error.HTTPError as exc:
-                    status = exc.code
-                    exc.read()
-                    exc.close()
+                status, _ = _request(base + "/", method="POST", data=b"{}")
 
             self.assertEqual(status, 405)
             self.assertEqual(Path(db_path).read_bytes(), before)
