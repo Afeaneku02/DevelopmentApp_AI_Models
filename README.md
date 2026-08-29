@@ -78,8 +78,22 @@ python tools/add_recommendation_outcome.py --db canonical.sqlite3 \
 
 Outcomes are append-only and descriptive: many outcomes can reference one
 recommendation, an outcome must point at an existing recommendation, and
-recording one never changes the recommendation's frozen state. Nothing here
-updates beliefs -- mapping outcomes back to evidence is a later step.
+recording one never changes the recommendation's frozen state.
+
+Turn repeated outcomes into conservative learning signals:
+
+```bash
+python tools/learn_from_recommendation_outcomes.py --db canonical.sqlite3           # print proposals
+python tools/learn_from_recommendation_outcomes.py --db canonical.sqlite3 --persist  # also store them
+```
+
+This groups outcomes by recommendation pattern (context + beliefs used) and,
+only once enough repeated trials exist, proposes weak `repeated_pattern_summary`
+belief-evidence for or against the beliefs the recommendation used. It makes
+no causal claim, never mutates a belief, and never recomputes; without
+`--persist` the database is opened read-only. The proposals are stored in
+`outcome_learning_signals` -- promoting one into the real belief-evidence
+ledger is a separate, later, backend-authorized step.
 
 Inspect a stored user model:
 
@@ -131,6 +145,10 @@ seed and use a throwaway demo database.
   result / user feedback / measured result / source) for an existing
   recommendation. Descriptive only -- no causal claim, does not update
   beliefs.
+- `tools/learn_from_recommendation_outcomes.py`: analyse repeated outcomes
+  into conservative `repeated_pattern_summary` belief-evidence proposals.
+  Prints by default; `--persist` appends analysis signals. No causal claim,
+  no belief mutation, no recompute.
 - `tools/run_manifest.py`: run a JSON manifest through the existing tools.
 
 ## Manifest References
@@ -181,10 +199,13 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
   product workflow.
 - The canonical belief-key registry is intentionally small and exact-match
   only.
+- Outcome learning stops at conservative `belief_evidence` proposals in
+  `outcome_learning_signals`; it does not yet authorize them into the ledger
+  or recompute beliefs.
 
 ## Good Next Step
 
-Add the outcome-learning loop on top of the recorded `recommendation_outcomes`:
-map repeated outcomes back to the recommendation's frozen belief state and
-adjust belief confidence conservatively, without claiming causality and only
-after enough repeated trials.
+Add the backend authorization step that reviews `outcome_learning_signals`
+proposals and, for the ones that clear policy, authorizes them into the
+`belief_evidence` ledger (with proper leaf-event provenance and
+`repeated_pattern_summary` overlap suppression) and triggers a recompute.

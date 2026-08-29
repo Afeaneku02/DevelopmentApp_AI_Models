@@ -40,9 +40,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.beliefs.models import BeliefEvidenceProposal
 from src.common.enums import (
     ContextEligibilityReason,
+    Direction,
     OutcomeFollowed,
+    OutcomeLearningSignalKind,
     OutcomeResult,
     RecommendationReviewStatus,
     RecommendationRiskTier,
@@ -227,3 +230,90 @@ class RecommendationOutcome(VersionedModel):
     # different from, ``created_at``, which is when this row was written).
     observed_at: datetime | None = None
     created_at: datetime
+
+
+class OutcomeLearningSignal(VersionedModel):
+    """The result of analysing repeated ``recommendation_outcomes`` for one
+    recommendation pattern -- a (recommendation_context, belief_ids_used)
+    pair (blueprint section 12.6).
+
+    Deliberately conservative and non-causal:
+
+    - It only exists once at least ``min_trials`` outcomes for the pattern
+      have accumulated (section 12.6: "Create repeated trials before
+      promoting recommendation-specific hypotheses").
+    - ``proposed_evidence`` is a list of ``BeliefEvidenceProposal`` -- weak,
+      ``repeated_pattern_summary`` evidence *for or against the beliefs the
+      recommendation used*, never a claim that the recommendation caused the
+      outcome. ``causal_claim`` is pinned ``False``.
+    - It is a *proposal*: nothing here authorizes a ledger write, mutates a
+      belief, or triggers a recompute. Persisting a signal only records the
+      analysis; promoting a proposal into ``belief_evidence`` is a separate,
+      later, backend-authorized step.
+
+    Provenance is preserved three ways: ``recommendation_ids`` /
+    ``outcome_ids`` name the exact rows analysed; each proposal's
+    ``source_event_ids`` traces to the belief's own backing events where the
+    caller supplied them; and ``independence_group`` is a stable key
+    (``outcome-learning:<context>:<belief_ids>``) so re-analysing the same
+    pattern can never be counted as independent corroboration.
+    """
+
+    signal_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    recommendation_context: str = Field(min_length=1)
+    belief_ids: list[str] = Field(min_length=1)
+
+    recommendation_ids: list[str] = Field(min_length=1)
+    outcome_ids: list[str] = Field(min_length=1)
+
+    trial_count: int = Field(ge=0)
+    supportive_count: int = Field(ge=0)
+    adverse_count: int = Field(ge=0)
+    neutral_count: int = Field(ge=0)
+
+    kind: OutcomeLearningSignalKind
+    direction: Direction | None = None
+    independence_group: str = Field(min_length=1)
+    proposed_evidence: list[BeliefEvidenceProposal] = Field(default_factory=list)
+
+    rationale: str = Field(min_length=1)
+    causal_claim: bool = False
+
+    model_version: str = Field(min_length=1)
+    prompt_version: str | None = None
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def _never_a_causal_claim(self) -> "OutcomeLearningSignal":
+        if self.causal_claim:
+            raise ValueError(
+                "causal_claim must be False: outcome-learning signals are correlational summaries, "
+                "never claims that a recommendation caused an outcome"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _counts_add_up(self) -> "OutcomeLearningSignal":
+        if self.supportive_count + self.adverse_count + self.neutral_count != self.trial_count:
+            raise ValueError("supportive + adverse + neutral counts must equal trial_count")
+        return self
+
+    @model_validator(mode="after")
+    def _kind_matches_evidence(self) -> "OutcomeLearningSignal":
+        if self.kind is OutcomeLearningSignalKind.NO_SIGNAL:
+            if self.proposed_evidence or self.direction is not None:
+                raise ValueError("a no_signal outcome-learning signal must propose no evidence")
+        else:
+            if not self.proposed_evidence:
+                raise ValueError(f"a {self.kind.value} signal must carry at least one evidence proposal")
+            expected = (
+                Direction.SUPPORT
+                if self.kind is OutcomeLearningSignalKind.SUPPORT
+                else Direction.CONTRADICT
+            )
+            if self.direction is not expected:
+                raise ValueError(f"{self.kind.value} signal must have direction {expected.value!r}")
+            if any(p.direction is not expected for p in self.proposed_evidence):
+                raise ValueError("every proposed evidence row must share the signal's direction")
+        return self

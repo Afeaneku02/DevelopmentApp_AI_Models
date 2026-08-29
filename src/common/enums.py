@@ -178,6 +178,19 @@ class OutcomeResult(str, Enum):
     UNKNOWN = "unknown"
 
 
+class OutcomeLearningSignalKind(str, Enum):
+    """The outcome of analysing repeated recommendation_outcomes for one
+    recommendation pattern (blueprint section 12.6). Deliberately coarse and
+    conservative: repeated positive outcomes can only ever produce weak
+    ``support``; repeated negative outcomes only weak ``contradiction``;
+    anything ambiguous or thin is ``no_signal``. None of these is a causal
+    claim about the recommendation."""
+
+    SUPPORT = "support"
+    WEAK_CONTRADICTION = "weak_contradiction"
+    NO_SIGNAL = "no_signal"
+
+
 class ContextEligibilityReason(str, Enum):
     """Why one belief was or was not authorized for use in a given
     recommendation context (blueprint sections 6.4 and 6.5). Every value

@@ -58,7 +58,11 @@ from src.beliefs.canonicalization import BeliefKeyCanonicalization
 from src.common.provenance import validate_belief_evidence_provenance, validate_observation_provenance
 from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
-from src.recommendations.models import RecommendationOutcome, UserRecommendation
+from src.recommendations.models import (
+    OutcomeLearningSignal,
+    RecommendationOutcome,
+    UserRecommendation,
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS user_events (
@@ -130,6 +134,16 @@ CREATE TABLE IF NOT EXISTS recommendation_outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_recommendation_outcomes_scope
     ON recommendation_outcomes (recommendation_id, id);
+
+CREATE TABLE IF NOT EXISTS outcome_learning_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    recommendation_context TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outcome_learning_signals_scope
+    ON outcome_learning_signals (user_id, recommendation_context, id);
 """
 
 
@@ -705,3 +719,59 @@ class Repository:
                 "SELECT data FROM recommendation_outcomes ORDER BY id ASC"
             ).fetchall()
         return [RecommendationOutcome.model_validate_json(row[0]) for row in rows]
+
+    # ---------------------------------------- outcome-learning signals --
+
+    def insert_outcome_learning_signal(self, signal: OutcomeLearningSignal) -> None:
+        """Append-only insert for one outcome-learning analysis result
+        (blueprint section 12.6). Re-validates through ``OutcomeLearningSignal``
+        first (so a signal that claims causality, whose counts do not add up,
+        or whose ``kind`` and evidence disagree fails before a byte is
+        written), then stores it.
+
+        A signal only *records an analysis and proposes weak evidence*. It
+        never authorizes a ``belief_evidence`` row, mutates a belief, or
+        triggers a recompute -- promoting a proposal into the ledger is a
+        separate, later, backend-authorized step. ``signal_id`` is ``UNIQUE``
+        and derived deterministically from the pattern and the exact outcome
+        rows analysed, so re-running the analysis over unchanged data is a
+        safe no-op (``sqlite3.IntegrityError``) rather than double-counting.
+        """
+        validated = OutcomeLearningSignal.model_validate(signal.model_dump())
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO outcome_learning_signals "
+                "(signal_id, user_id, recommendation_context, data) VALUES (?, ?, ?, ?)",
+                (
+                    validated.signal_id,
+                    validated.user_id,
+                    validated.recommendation_context,
+                    validated.model_dump_json(),
+                ),
+            )
+
+    def get_outcome_learning_signal(self, signal_id: str) -> OutcomeLearningSignal | None:
+        row = self._conn.execute(
+            "SELECT data FROM outcome_learning_signals WHERE signal_id = ?", (signal_id,)
+        ).fetchone()
+        return OutcomeLearningSignal.model_validate_json(row[0]) if row else None
+
+    def list_outcome_learning_signals(
+        self, *, user_id: str | None = None, recommendation_context: str | None = None
+    ) -> list[OutcomeLearningSignal]:
+        """Every stored outcome-learning signal, optionally scoped, oldest
+        first."""
+        clauses: list[str] = []
+        params: list[str] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if recommendation_context is not None:
+            clauses.append("recommendation_context = ?")
+            params.append(recommendation_context)
+        query = "SELECT data FROM outcome_learning_signals"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id ASC"
+        rows = self._conn.execute(query, params).fetchall()
+        return [OutcomeLearningSignal.model_validate_json(row[0]) for row in rows]

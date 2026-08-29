@@ -321,3 +321,44 @@ RECOMMENDATION_RANKING = RecommendationRankingWeights(
     },
     diversity_floor=0.5,
 )
+
+
+# --------------------------------------- outcome-learning heuristic (12.6) --
+
+# The conservative rule for turning repeated recommendation_outcomes into a
+# weak belief_evidence proposal. Blueprint section 12.6: "Create repeated
+# trials before promoting recommendation-specific hypotheses"; "Map
+# recommendation outcomes back to evidence without claiming causality";
+# "Update confidence conservatively". Versioned so a historical signal is
+# replayable. All strengths are deliberately far below what a recorded_event
+# leaf would carry -- an outcome is a noisy, correlational observation.
+OUTCOME_LEARNING_VERSION = "outcome-learning-0.6"
+
+
+@dataclass(frozen=True)
+class OutcomeLearningPolicy:
+    """``min_trials``: repeated outcomes required before *any* signal.
+    ``support_strength_per_trial`` / ``support_strength_cap``: a supportive
+    proposal's strength grows linearly with the count of followed-and-positive
+    outcomes, capped low. ``contradiction_*``: the same, even weaker, for a
+    repeated not-followed / unsuccessful pattern. ``contradiction_dominance``:
+    negatives must outnumber (positives + neutrals) by this factor before a
+    contradiction is proposed at all -- one or two bad outcomes among many
+    never penalise a belief."""
+
+    min_trials: int
+    support_strength_per_trial: float
+    support_strength_cap: float
+    contradiction_strength_per_trial: float
+    contradiction_strength_cap: float
+    contradiction_dominance: float
+
+
+OUTCOME_LEARNING_POLICY = OutcomeLearningPolicy(
+    min_trials=3,
+    support_strength_per_trial=0.05,
+    support_strength_cap=0.30,
+    contradiction_strength_per_trial=0.02,
+    contradiction_strength_cap=0.10,
+    contradiction_dominance=1.0,
+)
