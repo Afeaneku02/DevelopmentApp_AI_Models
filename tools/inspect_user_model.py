@@ -5,10 +5,13 @@ Dumps whatever is currently stored in a ``Repository.readonly_at_path(db)``
 SQLite database as one JSON document, using the repository's own read/list
 helpers (``list_events``, ``list_observations``,
 ``list_observation_events_for``, ``list_all_evidence``,
-``list_latest_beliefs``) -- never direct SQL, and never a write path. This
-CLI performs no inserts, updates, invalidations, or recomputes; it exists
-purely to answer "what is actually in this database right now" after using
-the other intake/recompute/invalidation CLIs.
+``list_latest_beliefs``, ``list_belief_key_canonicalizations``,
+``list_recommendations``, ``list_recommendation_outcomes``) -- never direct
+SQL, and never a write path. This CLI performs no inserts, updates,
+invalidations, recomputes, or recommendation issuance; it exists purely to
+answer "what is actually in this database right now" after using the other
+CLIs. A database opened before a given table existed simply reports that
+key as an empty list.
 
 ``readonly_at_path()`` (not the writable ``at_path()`` every intake CLI
 uses) is what actually makes this true rather than merely intended: it opens
@@ -33,8 +36,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
+from typing import Any, Callable
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -43,11 +48,22 @@ from src.beliefs.models import active_evidence  # noqa: E402
 from src.storage.repository import Repository  # noqa: E402
 
 
+def _list_or_empty(list_fn: Callable[..., list[Any]], **kwargs: Any) -> list[Any]:
+    """A ``Repository.list_*`` call that treats a missing table (a database
+    created before that table existed, opened read-only so the schema never
+    ran) as an empty result rather than an error."""
+    try:
+        return list_fn(**kwargs)
+    except sqlite3.OperationalError:
+        return []
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Dump events, observations, observation_events, evidence, and the latest "
-            "beliefs currently stored in a Repository. Read-only -- makes no changes."
+            "Dump events, observations, observation_events, evidence, the latest beliefs, "
+            "belief-key canonicalization decisions, recommendations, and recommendation "
+            "outcomes currently stored in a Repository. Read-only -- makes no changes."
         ),
     )
     parser.add_argument("--db", required=True, help="Path to the SQLite database file.")
@@ -83,6 +99,16 @@ def main(argv: list[str] | None = None) -> int:
         if not args.include_inactive_evidence:
             evidence = active_evidence(evidence)
         beliefs = repo.list_latest_beliefs(user_id=args.user_id, belief_id=args.belief_id)
+        canonicalizations = _list_or_empty(
+            repo.list_belief_key_canonicalizations, user_id=args.user_id
+        )
+        recommendations = _list_or_empty(repo.list_recommendations, user_id=args.user_id)
+        shown_recommendation_ids = {r.recommendation_id for r in recommendations}
+        recommendation_outcomes = [
+            o
+            for o in _list_or_empty(repo.list_recommendation_outcomes)
+            if o.recommendation_id in shown_recommendation_ids
+        ]
     finally:
         repo.close()
 
@@ -92,6 +118,11 @@ def main(argv: list[str] | None = None) -> int:
         "observation_events": [json.loads(link.model_dump_json()) for link in observation_events],
         "evidence": [json.loads(row.model_dump_json()) for row in evidence],
         "beliefs": [json.loads(belief.model_dump_json()) for belief in beliefs],
+        "canonicalizations": [json.loads(c.model_dump_json()) for c in canonicalizations],
+        "recommendations": [json.loads(r.model_dump_json()) for r in recommendations],
+        "recommendation_outcomes": [
+            json.loads(o.model_dump_json()) for o in recommendation_outcomes
+        ],
     }
     print(json.dumps(output, indent=2 if args.pretty else None))
     return 0

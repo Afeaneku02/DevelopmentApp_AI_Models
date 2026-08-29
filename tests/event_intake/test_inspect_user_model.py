@@ -24,6 +24,8 @@ _ADD_OBSERVATION_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "add_u
 _ADD_EVIDENCE_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "add_belief_evidence.py"
 _RECOMPUTE_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "recompute_belief.py"
 _INVALIDATE_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "invalidate_belief_evidence.py"
+_MAKE_REC_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "make_recommendation.py"
+_ADD_OUTCOME_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "add_recommendation_outcome.py"
 
 
 def _run(script: Path, args: list[str]) -> subprocess.CompletedProcess:
@@ -126,7 +128,12 @@ class EmptyDbOutputShapeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             printed = json.loads(result.stdout)
             self.assertEqual(
-                printed, {"events": [], "observations": [], "observation_events": [], "evidence": [], "beliefs": []}
+                printed,
+                {
+                    "events": [], "observations": [], "observation_events": [], "evidence": [],
+                    "beliefs": [], "canonicalizations": [], "recommendations": [],
+                    "recommendation_outcomes": [],
+                },
             )
 
 
@@ -288,6 +295,84 @@ class PrettyFlagTests(unittest.TestCase):
             self.assertNotIn("\n", compact.stdout.strip())
             self.assertIn("\n", pretty.stdout.strip())
             self.assertEqual(json.loads(compact.stdout), json.loads(pretty.stdout))
+
+
+def _seed_recommendation(db_path: str, *, recommendation_id: str, user_id: str, context_key: str) -> None:
+    result = _run(_MAKE_REC_SCRIPT, [
+        "--db", db_path, "--user-id", user_id, "--context-key", context_key,
+        "--recommendation-id", recommendation_id,
+    ])
+    assert result.returncode == 0, result.stderr
+
+
+def _seed_outcome(db_path: str, *, outcome_id: str, recommendation_id: str) -> None:
+    result = _run(_ADD_OUTCOME_SCRIPT, [
+        "--db", db_path, "--outcome-id", outcome_id, "--recommendation-id", recommendation_id,
+        "--followed", "followed", "--result", "successful", "--source", "app_event",
+        "--user-feedback", "did the after-work slot",
+    ])
+    assert result.returncode == 0, result.stderr
+
+
+class RecommendationsAndOutcomesAppearTests(unittest.TestCase):
+    def test_inspector_includes_persisted_recommendations_and_outcomes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_full_chain(
+                db_path, user_id="usr_1", belief_id="bel_1", event_id="evt_1",
+                observation_id="obs_1", evidence_id="bev_1",
+            )
+            _seed_recompute(db_path, belief_id="bel_1", user_id="usr_1")
+            _seed_recommendation(
+                db_path, recommendation_id="rec_1", user_id="usr_1", context_key="fitness_scheduling"
+            )
+            _seed_outcome(db_path, outcome_id="out_1", recommendation_id="rec_1")
+
+            result = _run_inspect(["--db", db_path])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            printed = json.loads(result.stdout)
+
+            self.assertEqual([r["recommendation_id"] for r in printed["recommendations"]], ["rec_1"])
+            self.assertEqual(printed["recommendations"][0]["user_id"], "usr_1")
+            self.assertEqual(
+                printed["recommendations"][0]["recommendation_context"], "fitness_scheduling"
+            )
+            self.assertIn("risk_tier", printed["recommendations"][0])
+            self.assertEqual(
+                [o["outcome_id"] for o in printed["recommendation_outcomes"]], ["out_1"]
+            )
+            self.assertEqual(printed["recommendation_outcomes"][0]["recommendation_id"], "rec_1")
+            self.assertEqual(printed["recommendation_outcomes"][0]["followed"], "followed")
+
+    def test_inspecting_does_not_mutate_the_frozen_recommendation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_full_chain(
+                db_path, user_id="usr_1", belief_id="bel_1", event_id="evt_1",
+                observation_id="obs_1", evidence_id="bev_1",
+            )
+            _seed_recompute(db_path, belief_id="bel_1", user_id="usr_1")
+            _seed_recommendation(
+                db_path, recommendation_id="rec_1", user_id="usr_1", context_key="fitness_scheduling"
+            )
+            _seed_outcome(db_path, outcome_id="out_1", recommendation_id="rec_1")
+
+            repo = Repository.at_path(db_path)
+            try:
+                before = repo.get_recommendation("rec_1").model_dump_json()
+            finally:
+                repo.close()
+
+            self.assertEqual(_run_inspect(["--db", db_path, "--pretty"]).returncode, 0)
+
+            repo = Repository.at_path(db_path)
+            try:
+                after = repo.get_recommendation("rec_1").model_dump_json()
+                outcomes = repo.list_recommendation_outcomes(recommendation_id="rec_1")
+            finally:
+                repo.close()
+            self.assertEqual(before, after)
+            self.assertEqual([o.outcome_id for o in outcomes], ["out_1"])
 
 
 if __name__ == "__main__":

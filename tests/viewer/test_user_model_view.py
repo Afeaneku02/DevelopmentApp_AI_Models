@@ -20,6 +20,8 @@ from src.beliefs.recompute import recompute_belief
 from src.events.models import UserEvent
 from src.observations.create_observation import create_observation_from_event
 from src.storage.repository import Repository
+from src.recommendations.engine import generate_recommendation
+from src.recommendations.models import RecommendationOutcome
 from src.viewer.user_model_view import (
     EVIDENCE_STATE_ACTIVE,
     EVIDENCE_STATE_DUPLICATE_SUPPRESSED,
@@ -30,6 +32,8 @@ from src.viewer.user_model_view import (
     evidence_row,
     evidence_state,
     observation_event_row,
+    recommendation_outcome_row,
+    recommendation_row,
     render_html,
     summarize,
 )
@@ -228,11 +232,13 @@ class RenderHtmlTests(unittest.TestCase):
         page = render_html(view_model)
         for heading in (
             "Events", "Observations", "Observation-event links", "Evidence", "Beliefs",
-            "Belief-key canonicalization",
+            "Belief-key canonicalization", "Recommendations", "Recommendation outcomes",
         ):
             self.assertIn(heading, page)
         self.assertIn("No events stored.", page)
         self.assertIn("No observation-event links stored.", page)
+        self.assertIn("No recommendations stored.", page)
+        self.assertIn("No recommendation outcomes stored.", page)
 
 
 def _seeded_repo() -> Repository:
@@ -273,6 +279,136 @@ def _seeded_repo() -> Repository:
         authorize_belief_key_canonicalization(proposal, canonicalization_id="can_1", authorized_at=AS_OF)
     )
     return repo
+
+
+def _usable_belief(belief_id: str = "bel_usable"):
+    from src.beliefs.models import UserBelief
+
+    return UserBelief(
+        belief_id=belief_id, user_id=USER_ID, belief_type="behavioral_tendency",
+        belief_type_registry_version="belief-types-0.6", belief_key="higher_adherence_after_work",
+        belief_value=True, confidence=0.7, supporting_evidence_count=3, contradicting_evidence_count=0,
+        total_evidence_count=3, effective_support_count=2.0, effective_evidence_count=2.0,
+        evidence_for=3, evidence_against=0, allowed_contexts=[], disallowed_contexts=[],
+        sensitivity_class="normal", persistence_policy="retained",
+        first_observed=AS_OF - timedelta(days=5), last_validated=AS_OF, status="validated",
+        **VERSION_FIELDS,
+    )
+
+
+class RecommendationAndOutcomeRowTests(unittest.TestCase):
+    def _recommendation(self, recommendation_id: str = "rec_1", context_key: str = "fitness_scheduling"):
+        return generate_recommendation(
+            recommendation_id=recommendation_id, user_id=USER_ID, context_key=context_key,
+            beliefs=[_usable_belief()], created_at=AS_OF, goal="be consistent",
+        )
+
+    def test_recommendation_row_surfaces_the_highlighted_fields(self) -> None:
+        row = recommendation_row(self._recommendation())
+        for key in (
+            "recommendation_id", "user_id", "recommendation_context", "risk_tier",
+            "review_required", "review_status", "ranking_score", "confidence",
+            "belief_ids_used", "recommendation",
+        ):
+            self.assertIn(key, row)
+        self.assertEqual(row["recommendation_id"], "rec_1")
+        self.assertEqual(row["risk_tier"], "low")
+        self.assertFalse(row["review_required"])
+        self.assertEqual(row["belief_ids_used"], ["bel_usable"])
+
+    def test_recommendation_outcome_row_surfaces_the_highlighted_fields(self) -> None:
+        outcome = RecommendationOutcome(
+            outcome_id="out_1", recommendation_id="rec_1", followed="partially_followed",
+            result="mixed", source="user_survey", user_feedback="tried twice",
+            measured_result="2/5 sessions", observed_at=AS_OF, created_at=AS_OF, **VERSION_FIELDS,
+        )
+        row = recommendation_outcome_row(outcome)
+        self.assertEqual(row["outcome_id"], "out_1")
+        self.assertEqual(row["recommendation_id"], "rec_1")
+        self.assertEqual(row["followed"], "partially_followed")
+        self.assertEqual(row["result"], "mixed")
+        self.assertEqual(row["source"], "user_survey")
+        self.assertEqual(row["user_feedback"], "tried twice")
+        self.assertEqual(row["measured_result"], "2/5 sessions")
+
+    def _seed(self):
+        repo = Repository.in_memory()
+        repo.save_belief(_usable_belief())
+        repo.insert_recommendation(self._recommendation("rec_1"))
+        repo.insert_recommendation(
+            self._recommendation("rec_hi", context_key="mental_health_support")
+        )
+        repo.insert_recommendation_outcome(
+            RecommendationOutcome(
+                outcome_id="out_1", recommendation_id="rec_1", followed="followed",
+                result="successful", source="app_event", created_at=AS_OF, **VERSION_FIELDS,
+            )
+        )
+        return repo
+
+    def test_collect_view_model_includes_recommendations_and_outcomes(self) -> None:
+        repo = self._seed()
+        try:
+            view_model = collect_view_model(repo, db_path=":memory:")
+        finally:
+            repo.close()
+
+        self.assertEqual(
+            [r["recommendation_id"] for r in view_model.recommendations], ["rec_1", "rec_hi"]
+        )
+        self.assertEqual(
+            [o["outcome_id"] for o in view_model.recommendation_outcomes], ["out_1"]
+        )
+        summary = view_model.summary()
+        self.assertEqual(summary["recommendations"], 2)
+        self.assertEqual(summary["recommendation_outcomes"], 1)
+        self.assertEqual(summary["review_required_recommendations"], 1)  # rec_hi is high-risk
+
+    def test_render_html_shows_both_sections_with_the_persisted_ids(self) -> None:
+        repo = self._seed()
+        try:
+            page = render_html(collect_view_model(repo, db_path="demo.sqlite3"))
+        finally:
+            repo.close()
+        self.assertIn("Recommendations", page)
+        self.assertIn("Recommendation outcomes", page)
+        self.assertIn("rec_1", page)
+        self.assertIn("rec_hi", page)
+        self.assertIn("out_1", page)
+
+    def test_outcomes_are_scoped_to_the_shown_recommendations(self) -> None:
+        repo = self._seed()
+        try:
+            # another user's recommendation + outcome must not appear when scoped
+            other = generate_recommendation(
+                recommendation_id="rec_other", user_id="usr_other",
+                context_key="fitness_scheduling",
+                beliefs=[_usable_belief("bel_other").model_copy(update={"user_id": "usr_other"})],
+                created_at=AS_OF,
+            )
+            repo.insert_recommendation(other)
+            repo.insert_recommendation_outcome(
+                RecommendationOutcome(
+                    outcome_id="out_other", recommendation_id="rec_other", followed="ignored",
+                    result="unknown", source="manual", created_at=AS_OF, **VERSION_FIELDS,
+                )
+            )
+            scoped = collect_view_model(repo, db_path=":memory:", user_id=USER_ID)
+        finally:
+            repo.close()
+        self.assertEqual(
+            {r["recommendation_id"] for r in scoped.recommendations}, {"rec_1", "rec_hi"}
+        )
+        self.assertEqual([o["outcome_id"] for o in scoped.recommendation_outcomes], ["out_1"])
+
+    def test_empty_database_renders_both_sections_empty(self) -> None:
+        repo = Repository.in_memory()
+        try:
+            page = render_html(collect_view_model(repo, db_path="empty.sqlite3"))
+        finally:
+            repo.close()
+        self.assertIn("No recommendations stored.", page)
+        self.assertIn("No recommendation outcomes stored.", page)
 
 
 if __name__ == "__main__":

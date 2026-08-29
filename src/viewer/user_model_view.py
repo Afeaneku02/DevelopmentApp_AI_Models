@@ -6,9 +6,12 @@ Everything here is read-only and side-effect free:
 - ``collect_view_model()`` reads a ``Repository`` through its own read/list
   helpers only (``list_events``, ``list_observations``,
   ``list_observation_events_for``, ``list_all_evidence``,
-  ``list_latest_beliefs``, ``list_belief_key_canonicalizations``) -- never
+  ``list_latest_beliefs``, ``list_belief_key_canonicalizations``,
+  ``list_recommendations``, ``list_recommendation_outcomes``) -- never
   direct SQL, never a write path. It recomputes nothing, suppresses
-  nothing, invalidates nothing, canonicalizes nothing.
+  nothing, invalidates nothing, canonicalizes nothing, and issues no
+  recommendation. A database opened before the recommendation tables
+  existed simply shows those sections empty (see ``_list_or_empty``).
 - Every ``*_row()`` function is a plain projection of one already-persisted
   record onto the handful of fields the viewer shows.
 - ``render_html()`` turns the collected view model into a single
@@ -24,6 +27,8 @@ lock flag is the signal for it.
 from __future__ import annotations
 
 import html
+import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -32,6 +37,7 @@ from src.beliefs.canonicalization import BeliefKeyCanonicalization
 from src.beliefs.models import BeliefEvidence, UserBelief
 from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
+from src.recommendations.models import RecommendationOutcome, UserRecommendation
 
 # The three mutually exclusive states the viewer buckets evidence into, in
 # precedence order: an invalidated row is "inactive" even if it was also
@@ -164,6 +170,48 @@ def canonicalization_row(decision: BeliefKeyCanonicalization) -> dict[str, Any]:
     }
 
 
+def recommendation_row(recommendation: UserRecommendation) -> dict[str, Any]:
+    """The recommendation fields the viewer highlights: the resolved risk
+    context, the manual-review gate, the ranking numbers, the beliefs used,
+    and the recommendation text itself."""
+    return {
+        "recommendation_id": recommendation.recommendation_id,
+        "user_id": recommendation.user_id,
+        "recommendation_context": recommendation.recommendation_context,
+        "proposed_context_key": recommendation.proposed_context_key,
+        "risk_tier": recommendation.risk_tier.value,
+        "risk_resolution_path": recommendation.risk_resolution_path.value,
+        "review_required": recommendation.review_required,
+        "review_status": recommendation.review_status.value,
+        "required_resolution_mode": (
+            recommendation.required_resolution_mode.value
+            if recommendation.required_resolution_mode is not None
+            else None
+        ),
+        "ranking_score": recommendation.ranking_score,
+        "confidence": recommendation.confidence,
+        "belief_ids_used": list(recommendation.belief_ids_used),
+        "blocked_belief_count": len(recommendation.blocked_beliefs),
+        "recommendation": recommendation.recommendation,
+        "goal": recommendation.goal,
+        "created_at": _fmt(recommendation.created_at),
+    }
+
+
+def recommendation_outcome_row(outcome: RecommendationOutcome) -> dict[str, Any]:
+    return {
+        "outcome_id": outcome.outcome_id,
+        "recommendation_id": outcome.recommendation_id,
+        "followed": outcome.followed.value,
+        "result": outcome.result.value,
+        "source": outcome.source,
+        "observed_at": _fmt(outcome.observed_at),
+        "created_at": _fmt(outcome.created_at),
+        "user_feedback": outcome.user_feedback,
+        "measured_result": outcome.measured_result,
+    }
+
+
 @dataclass
 class ViewModel:
     """Everything the viewer shows, already shaped into plain dict rows."""
@@ -178,6 +226,8 @@ class ViewModel:
     evidence: list[dict[str, Any]] = field(default_factory=list)
     beliefs: list[dict[str, Any]] = field(default_factory=list)
     canonicalizations: list[dict[str, Any]] = field(default_factory=list)
+    recommendations: list[dict[str, Any]] = field(default_factory=list)
+    recommendation_outcomes: list[dict[str, Any]] = field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
         return summarize(self)
@@ -201,6 +251,19 @@ def summarize(view_model: ViewModel) -> dict[str, Any]:
         key = row["decision"]
         canonicalizations_by_decision[key] = canonicalizations_by_decision.get(key, 0) + 1
 
+    recommendations_by_risk_tier: dict[str, int] = {}
+    review_required_recommendations = 0
+    for row in view_model.recommendations:
+        recommendations_by_risk_tier[row["risk_tier"]] = (
+            recommendations_by_risk_tier.get(row["risk_tier"], 0) + 1
+        )
+        if row["review_required"]:
+            review_required_recommendations += 1
+
+    outcomes_by_followed: dict[str, int] = {}
+    for row in view_model.recommendation_outcomes:
+        outcomes_by_followed[row["followed"]] = outcomes_by_followed.get(row["followed"], 0) + 1
+
     return {
         "events": len(view_model.events),
         "observations": len(view_model.observations),
@@ -212,7 +275,24 @@ def summarize(view_model: ViewModel) -> dict[str, Any]:
         "locked_beliefs": locked_beliefs,
         "canonicalizations": len(view_model.canonicalizations),
         "canonicalizations_by_decision": canonicalizations_by_decision,
+        "recommendations": len(view_model.recommendations),
+        "recommendations_by_risk_tier": recommendations_by_risk_tier,
+        "review_required_recommendations": review_required_recommendations,
+        "recommendation_outcomes": len(view_model.recommendation_outcomes),
+        "outcomes_by_followed": outcomes_by_followed,
     }
+
+
+def _list_or_empty(list_fn: Callable[..., list[Any]], **kwargs: Any) -> list[Any]:
+    """Call a ``Repository.list_*`` helper, but treat a missing table as an
+    empty result rather than an error. ``readonly_at_path`` never runs the
+    schema, so a database created before the recommendation tables existed
+    would otherwise raise ``sqlite3.OperationalError`` here -- the viewer's
+    job is to show what is there, and "nothing" is a valid answer."""
+    try:
+        return list_fn(**kwargs)
+    except sqlite3.OperationalError:
+        return []
 
 
 def collect_view_model(
@@ -241,6 +321,16 @@ def collect_view_model(
     beliefs = repo.list_latest_beliefs(user_id=user_id, belief_id=belief_id)
     canonicalizations = repo.list_belief_key_canonicalizations(user_id=user_id)
 
+    recommendations = _list_or_empty(repo.list_recommendations, user_id=user_id)
+    # Outcomes carry no user_id; scope them to the recommendations shown so a
+    # user-scoped page never leaks another user's outcome rows.
+    shown_recommendation_ids = {r.recommendation_id for r in recommendations}
+    recommendation_outcomes = [
+        o
+        for o in _list_or_empty(repo.list_recommendation_outcomes)
+        if o.recommendation_id in shown_recommendation_ids
+    ]
+
     return ViewModel(
         db_path=db_path,
         generated_at=generated_at,
@@ -255,6 +345,10 @@ def collect_view_model(
         evidence=[evidence_row(e) for e in evidence],
         beliefs=[belief_row(b) for b in beliefs],
         canonicalizations=[canonicalization_row(c) for c in canonicalizations],
+        recommendations=[recommendation_row(r) for r in recommendations],
+        recommendation_outcomes=[
+            recommendation_outcome_row(o) for o in recommendation_outcomes
+        ],
     )
 
 
@@ -293,6 +387,12 @@ td.wrap { white-space: normal; min-width: 18rem; }
 .tag.unlocked { background: #e7ebf0; color: #444; border: 1px solid #ccc; }
 .tag.status { background: #2f6fb0; color: #fff; }
 .tag.decision { background: #5a4b8a; color: #fff; }
+.tag.low, .tag.followed, .tag.successful { background: #0a7d33; color: #fff; }
+.tag.medium, .tag.partially_followed, .tag.mixed, .tag.pending { background: #b5860b; color: #fff; }
+.tag.high, .tag.unsuccessful { background: #b02a37; color: #fff; }
+.tag.not_followed, .tag.ignored { background: #8a8f95; color: #fff; }
+.tag.not_required, .tag.unknown, .tag.not_yet_known {
+    background: #e7ebf0; color: #444; border: 1px solid #ccc; }
 .empty { color: #888; font-style: italic; margin-bottom: .5rem; }
 """
 
@@ -331,6 +431,9 @@ def _summary_cards(summary: dict[str, Any]) -> str:
         ("beliefs", summary["beliefs"]),
         ("locked beliefs", summary["locked_beliefs"]),
         ("canonicalizations", summary["canonicalizations"]),
+        ("recommendations", summary["recommendations"]),
+        ("recs awaiting review", summary["review_required_recommendations"]),
+        ("outcomes", summary["recommendation_outcomes"]),
     ]
     parts = [
         f'<div class="card"><div class="n">{int(n)}</div><div class="l">{html.escape(label)}</div></div>'
@@ -453,6 +556,52 @@ def _canonicalizations_section(rows: list[dict[str, Any]]) -> str:
     return f"<h2>Belief-key canonicalization decisions</h2>{table}"
 
 
+def _recommendations_section(rows: list[dict[str, Any]]) -> str:
+    table = _table(
+        ["recommendation_id", "user_id", "context", "risk_tier", "review", "review_status",
+         "resolution_mode", "ranking_score", "confidence", "belief_ids_used", "blocked",
+         "created_at", "recommendation"],
+        [
+            [
+                _esc(r["recommendation_id"]), _esc(r["user_id"]),
+                _esc(r["recommendation_context"]),
+                _tag(r["risk_tier"], r["risk_tier"]),
+                _tag("REVIEW", "high") if r["review_required"] else _tag("auto", "not_required"),
+                _tag(r["review_status"], r["review_status"]),
+                _esc(r["required_resolution_mode"]),
+                f'{r["ranking_score"]:.4f}', f'{r["confidence"]:.4f}',
+                _esc(", ".join(r["belief_ids_used"])),
+                _esc(r["blocked_belief_count"]),
+                _esc(r["created_at"]),
+                _esc(r["recommendation"]),
+            ]
+            for r in rows
+        ],
+        empty="No recommendations stored.",
+        wrap_columns={12},
+    )
+    return f"<h2>Recommendations</h2>{table}"
+
+
+def _recommendation_outcomes_section(rows: list[dict[str, Any]]) -> str:
+    table = _table(
+        ["outcome_id", "recommendation_id", "followed", "result", "source",
+         "observed_at", "created_at", "user_feedback", "measured_result"],
+        [
+            [
+                _esc(r["outcome_id"]), _esc(r["recommendation_id"]),
+                _tag(r["followed"], r["followed"]), _tag(r["result"], r["result"]),
+                _esc(r["source"]), _esc(r["observed_at"]), _esc(r["created_at"]),
+                _esc(r["user_feedback"]), _esc(r["measured_result"]),
+            ]
+            for r in rows
+        ],
+        empty="No recommendation outcomes stored.",
+        wrap_columns={7, 8},
+    )
+    return f"<h2>Recommendation outcomes</h2>{table}"
+
+
 def render_html(view_model: ViewModel) -> str:
     """Render the whole view model to one self-contained HTML page. Pure --
     no I/O, no external resources, no scripts."""
@@ -486,6 +635,8 @@ def render_html(view_model: ViewModel) -> str:
 {_evidence_section(view_model.evidence)}
 {_beliefs_section(view_model.beliefs)}
 {_canonicalizations_section(view_model.canonicalizations)}
+{_recommendations_section(view_model.recommendations)}
+{_recommendation_outcomes_section(view_model.recommendation_outcomes)}
 </body>
 </html>
 """
