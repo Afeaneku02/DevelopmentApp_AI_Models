@@ -62,6 +62,18 @@ python tools/inspect_user_model.py --db canonical.sqlite3 --user-id usr_31 --inc
 The inspector shows events, observations, evidence, beliefs, and belief-key
 canonicalization decisions from the SQLite database. It is read-only.
 
+View the same data as an HTML page instead of JSON:
+
+```bash
+python tools/view_user_model.py --db canonical.sqlite3          # writes an HTML file and opens it
+python tools/serve_user_model.py --db canonical.sqlite3         # serves it at http://localhost:8000
+```
+
+Both are strictly read-only (`Repository.readonly_at_path`, no writes). The
+server re-reads the database on every request and accepts optional
+`?user_id=` / `?belief_id=` query parameters. Pass `--demo` to either tool to
+seed and use a throwaway demo database.
+
 ## Main Tools
 
 - `tools/add_user_event.py`: insert one raw user event.
@@ -78,6 +90,10 @@ canonicalization decisions from the SQLite database. It is read-only.
   reset, duplicate-suppression, policy-invalidation, or manual-review reasons.
 - `tools/inspect_user_model.py`: read-only JSON inspection of stored model
   state.
+- `tools/view_user_model.py`: render the stored model state as one read-only
+  HTML page.
+- `tools/serve_user_model.py`: serve that page locally (stdlib `http.server`),
+  re-reading the database on every request. Read-only; GET/HEAD only.
 - `tools/run_manifest.py`: run a JSON manifest through the existing tools.
 
 ## Manifest References
@@ -115,8 +131,9 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
 
 ## Current Limitations
 
-- There is no user-facing app or dashboard yet; model state is inspected as
-  JSON.
+- There is no user-facing app yet; model state is inspected as JSON or through
+  the read-only HTML viewer (`tools/view_user_model.py` /
+  `tools/serve_user_model.py`).
 - There is no live data collection pipeline yet; events are inserted manually
   or through manifests.
 - Recommendation ranking/policy application is not built yet.
@@ -127,6 +144,6 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
 
 ## Good Next Step
 
-Build a read-only local viewer for the SQLite model state. It should use only
-repository read APIs and make the current events, observations, evidence,
-beliefs, and canonicalization decisions easier to inspect than raw JSON.
+Build the recommendation loop on top of the context/risk policy foundation in
+`src/recommendations/context_policy.py`: candidate generation and ranking that
+consumes only beliefs already authorized by `authorize_beliefs_for_context`.
