@@ -120,6 +120,16 @@ def main(argv: list[str] | None = None) -> int:
         for row in _list_or_empty(repo.list_all_evidence, user_id=args.user_id):
             if row.source_type.value == "repeated_pattern_summary":
                 promoted_by_group.setdefault(row.independence_group, []).append(row.evidence_id)
+        # Manual-review trail. Reviews carry no user_id, so scope them to the
+        # signals shown here rather than leaking another user's review rows.
+        shown_signal_ids = {s.signal_id for s in outcome_learning_signals}
+        reviews_by_signal: dict[str, list[Any]] = {}
+        shown_reviews: list[Any] = []
+        for review in _list_or_empty(repo.list_outcome_learning_signal_reviews):
+            if review.signal_id not in shown_signal_ids:
+                continue
+            reviews_by_signal.setdefault(review.signal_id, []).append(review)
+            shown_reviews.append(review)
     finally:
         repo.close()
 
@@ -129,6 +139,12 @@ def main(argv: list[str] | None = None) -> int:
         promoted_ids = sorted(promoted_by_group.get(signal.independence_group, []))
         payload["promoted"] = bool(promoted_ids)
         payload["promoted_evidence_ids"] = promoted_ids
+        signal_reviews = reviews_by_signal.get(signal.signal_id, [])
+        payload["review_status"] = (
+            signal_reviews[-1].decision.value if signal_reviews else "pending"
+        )
+        payload["review_count"] = len(signal_reviews)
+        payload["reviews"] = [json.loads(r.model_dump_json()) for r in signal_reviews]
         signal_dicts.append(payload)
 
     output = {
@@ -143,6 +159,9 @@ def main(argv: list[str] | None = None) -> int:
             json.loads(o.model_dump_json()) for o in recommendation_outcomes
         ],
         "outcome_learning_signals": signal_dicts,
+        "outcome_learning_signal_reviews": [
+            json.loads(r.model_dump_json()) for r in shown_reviews
+        ],
     }
     print(json.dumps(output, indent=2 if args.pretty else None))
     return 0

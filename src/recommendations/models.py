@@ -45,6 +45,7 @@ from src.common.enums import (
     ContextEligibilityReason,
     Direction,
     OutcomeFollowed,
+    OutcomeLearningReviewDecision,
     OutcomeLearningSignalKind,
     OutcomeResult,
     RecommendationReviewStatus,
@@ -316,4 +317,67 @@ class OutcomeLearningSignal(VersionedModel):
                 raise ValueError(f"{self.kind.value} signal must have direction {expected.value!r}")
             if any(p.direction is not expected for p in self.proposed_evidence):
                 raise ValueError("every proposed evidence row must share the signal's direction")
+        return self
+
+
+class OutcomeLearningSignalReviewProposal(VersionedModel):
+    """The entire surface an LLM / extractor may fill in when *drafting* a
+    review of an outcome-learning signal: the signal it is about and,
+    optionally, a suggested notes string.
+
+    It has no ``decision``, ``reviewer_id``, ``review_id``, or any
+    promotion/recompute field. ``extra="forbid"`` (from ``VersionedModel``)
+    means a payload that tries to smuggle one in fails construction -- the
+    reviewer decision and identity always come from a human/backend actor
+    via the CLI, never from model output (blueprint section 6.4: "LLM output
+    ... cannot mark review complete, choose a weaker resolution mode, or
+    lower the required risk control")."""
+
+    signal_id: str = Field(min_length=1)
+    suggested_notes: str | None = None
+
+
+class OutcomeLearningSignalReview(VersionedModel):
+    """One manual review decision on whether an outcome-learning signal may
+    be promoted into ``belief_evidence`` (blueprint section 6.4's
+    manual-review gate applied to the section 12.6 loop).
+
+    Append-only and auditable: a signal may accumulate several reviews over
+    time (a rejection, a later approval, a re-approval under a new policy).
+    Only ``review_id`` is unique. ``reviewer_id`` and ``decision`` are
+    reviewer-owned; the ``promoted_evidence_ids`` / ``recomputed_belief_ids``
+    fields record exactly what the approval caused, so the promotion is
+    replayable from the review alone.
+    """
+
+    review_id: str = Field(min_length=1)
+    signal_id: str = Field(min_length=1)
+    reviewer_id: str = Field(min_length=1)
+    decision: OutcomeLearningReviewDecision
+    notes: str | None = None
+
+    promotion_requested: bool = False
+    recompute_requested: bool = False
+    promoted_evidence_ids: list[str] = Field(default_factory=list)
+    recomputed_belief_ids: list[str] = Field(default_factory=list)
+
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def _rejected_reviews_promote_nothing(self) -> "OutcomeLearningSignalReview":
+        if self.decision is OutcomeLearningReviewDecision.REJECTED and (
+            self.promotion_requested
+            or self.recompute_requested
+            or self.promoted_evidence_ids
+            or self.recomputed_belief_ids
+        ):
+            raise ValueError("a rejected review must not request or record any promotion/recompute")
+        return self
+
+    @model_validator(mode="after")
+    def _recompute_implies_promotion(self) -> "OutcomeLearningSignalReview":
+        if self.recompute_requested and not self.promotion_requested:
+            raise ValueError("recompute_requested requires promotion_requested")
+        if (self.promoted_evidence_ids or self.recomputed_belief_ids) and not self.promotion_requested:
+            raise ValueError("promoted/recomputed ids recorded without promotion_requested")
         return self

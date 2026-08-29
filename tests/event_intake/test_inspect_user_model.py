@@ -135,6 +135,7 @@ class EmptyDbOutputShapeTests(unittest.TestCase):
                     "events": [], "observations": [], "observation_events": [], "evidence": [],
                     "beliefs": [], "canonicalizations": [], "recommendations": [],
                     "recommendation_outcomes": [], "outcome_learning_signals": [],
+                    "outcome_learning_signal_reviews": [],
                 },
             )
 

@@ -41,6 +41,7 @@ from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
 from src.recommendations.models import (
     OutcomeLearningSignal,
+    OutcomeLearningSignalReview,
     RecommendationOutcome,
     UserRecommendation,
 )
@@ -219,7 +220,10 @@ def recommendation_outcome_row(outcome: RecommendationOutcome) -> dict[str, Any]
 
 
 def outcome_learning_signal_row(
-    signal: OutcomeLearningSignal, *, promoted_evidence_ids: list[str] | None = None
+    signal: OutcomeLearningSignal,
+    *,
+    promoted_evidence_ids: list[str] | None = None,
+    reviews: list[OutcomeLearningSignalReview] | None = None,
 ) -> dict[str, Any]:
     """One outcome-learning signal, projected onto the fields the viewer
     shows. ``proposed_evidence`` is summarised, not expanded: its count plus
@@ -228,10 +232,17 @@ def outcome_learning_signal_row(
 
     ``promoted_evidence_ids`` (the ``belief_evidence`` rows that were
     authorized from this signal -- matched by its ``independence_group``)
-    is supplied by ``collect_view_model``; ``promoted`` is ``True`` when any
-    exist, so the viewer shows which signals have actually become evidence.
+    and ``reviews`` (its manual-review trail) are supplied by
+    ``collect_view_model``; ``promoted`` and ``review_status`` are derived
+    from them so the viewer shows which signals became evidence and where
+    each one stands in review.
     """
     promoted_evidence_ids = sorted(promoted_evidence_ids or [])
+    reviews = list(reviews or [])
+    review_decisions = [
+        {"review_id": r.review_id, "reviewer_id": r.reviewer_id, "decision": r.decision.value}
+        for r in reviews
+    ]
     proposed = [
         {
             "belief_id": p.belief_id,
@@ -261,6 +272,24 @@ def outcome_learning_signal_row(
         "proposed_evidence": proposed,
         "promoted": bool(promoted_evidence_ids),
         "promoted_evidence_ids": promoted_evidence_ids,
+        "review_status": reviews[-1].decision.value if reviews else "pending",
+        "review_count": len(reviews),
+        "review_decisions": review_decisions,
+    }
+
+
+def outcome_learning_signal_review_row(review: OutcomeLearningSignalReview) -> dict[str, Any]:
+    return {
+        "review_id": review.review_id,
+        "signal_id": review.signal_id,
+        "reviewer_id": review.reviewer_id,
+        "decision": review.decision.value,
+        "notes": review.notes,
+        "promotion_requested": review.promotion_requested,
+        "recompute_requested": review.recompute_requested,
+        "promoted_evidence_ids": list(review.promoted_evidence_ids),
+        "recomputed_belief_ids": list(review.recomputed_belief_ids),
+        "created_at": _fmt(review.created_at),
     }
 
 
@@ -281,6 +310,7 @@ class ViewModel:
     recommendations: list[dict[str, Any]] = field(default_factory=list)
     recommendation_outcomes: list[dict[str, Any]] = field(default_factory=list)
     outcome_learning_signals: list[dict[str, Any]] = field(default_factory=list)
+    outcome_learning_signal_reviews: list[dict[str, Any]] = field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
         return summarize(self)
@@ -326,6 +356,11 @@ def summarize(view_model: ViewModel) -> dict[str, Any]:
         if row["promoted"]:
             promoted_signals += 1
 
+    signals_by_review_status: dict[str, int] = {}
+    for row in view_model.outcome_learning_signals:
+        status = row.get("review_status", "pending")
+        signals_by_review_status[status] = signals_by_review_status.get(status, 0) + 1
+
     return {
         "events": len(view_model.events),
         "observations": len(view_model.observations),
@@ -346,6 +381,8 @@ def summarize(view_model: ViewModel) -> dict[str, Any]:
         "outcome_learning_signals_by_kind": signals_by_kind,
         "outcome_learning_proposed_evidence": proposed_evidence_rows,
         "outcome_learning_signals_promoted": promoted_signals,
+        "outcome_learning_signals_by_review_status": signals_by_review_status,
+        "outcome_learning_signal_reviews": len(view_model.outcome_learning_signal_reviews),
     }
 
 
@@ -409,6 +446,18 @@ def collect_view_model(
         if row.source_type.value == "repeated_pattern_summary":
             promoted_by_group.setdefault(row.independence_group, []).append(row.evidence_id)
 
+    # Manual-review trail per signal. Reviews carry no user_id of their own,
+    # so scope them to the signals actually shown on this (possibly
+    # user-scoped) page rather than leaking another user's review rows.
+    shown_signal_ids = {s.signal_id for s in outcome_learning_signals}
+    reviews_by_signal: dict[str, list[OutcomeLearningSignalReview]] = {}
+    shown_reviews: list[OutcomeLearningSignalReview] = []
+    for review in _list_or_empty(repo.list_outcome_learning_signal_reviews):
+        if review.signal_id not in shown_signal_ids:
+            continue
+        reviews_by_signal.setdefault(review.signal_id, []).append(review)
+        shown_reviews.append(review)
+
     return ViewModel(
         db_path=db_path,
         generated_at=generated_at,
@@ -429,9 +478,14 @@ def collect_view_model(
         ],
         outcome_learning_signals=[
             outcome_learning_signal_row(
-                s, promoted_evidence_ids=promoted_by_group.get(s.independence_group, [])
+                s,
+                promoted_evidence_ids=promoted_by_group.get(s.independence_group, []),
+                reviews=reviews_by_signal.get(s.signal_id, []),
             )
             for s in outcome_learning_signals
+        ],
+        outcome_learning_signal_reviews=[
+            outcome_learning_signal_review_row(r) for r in shown_reviews
         ],
     )
 
@@ -475,6 +529,8 @@ td.wrap { white-space: normal; min-width: 18rem; }
 .tag.medium, .tag.partially_followed, .tag.mixed, .tag.pending { background: #b5860b; color: #fff; }
 .tag.high, .tag.unsuccessful { background: #b02a37; color: #fff; }
 .tag.not_followed, .tag.ignored { background: #8a8f95; color: #fff; }
+.tag.approved { background: #0a7d33; color: #fff; }
+.tag.rejected { background: #b02a37; color: #fff; }
 .tag.support { background: #0a7d33; color: #fff; }
 .tag.weak_contradiction { background: #b02a37; color: #fff; }
 .tag.no_signal { background: #e7ebf0; color: #444; border: 1px solid #ccc; }
@@ -525,6 +581,7 @@ def _summary_cards(summary: dict[str, Any]) -> str:
         ("learning signals", summary["outcome_learning_signals"]),
         ("proposed evidence", summary["outcome_learning_proposed_evidence"]),
         ("promoted signals", summary["outcome_learning_signals_promoted"]),
+        ("signal reviews", summary["outcome_learning_signal_reviews"]),
     ]
     parts = [
         f'<div class="card"><div class="n">{int(n)}</div><div class="l">{html.escape(label)}</div></div>'
@@ -707,10 +764,16 @@ def _outcome_learning_signals_section(rows: list[dict[str, Any]]) -> str:
             return _tag("no", "not_required")
         return f'{_tag("promoted", "support")} {html.escape(", ".join(row["promoted_evidence_ids"]))}'
 
+    def _review(row: dict[str, Any]) -> str:
+        status = row.get("review_status", "pending")
+        count = row.get("review_count", 0)
+        tag = _tag(status, status)
+        return f"{tag} ({count})" if count > 1 else tag
+
     table = _table(
         ["signal_id", "user_id", "context", "kind", "direction", "trials",
          "supp/adv/neut", "belief_ids", "recommendation_ids", "outcome_ids",
-         "causal_claim", "proposed_evidence", "promoted", "created_at", "rationale"],
+         "causal_claim", "proposed_evidence", "promoted", "review", "created_at", "rationale"],
         [
             [
                 _esc(r["signal_id"]), _esc(r["user_id"]), _esc(r["recommendation_context"]),
@@ -724,15 +787,39 @@ def _outcome_learning_signals_section(rows: list[dict[str, Any]]) -> str:
                 _tag("causal!", "high") if r["causal_claim"] else _tag("none", "not_required"),
                 _proposed(r),
                 _promoted(r),
+                _review(r),
                 _esc(r["created_at"]),
                 _esc(r["rationale"]),
             ]
             for r in rows
         ],
         empty="No outcome-learning signals stored.",
-        wrap_columns={8, 9, 14},
+        wrap_columns={8, 9, 15},
     )
     return f"<h2>Outcome learning signals</h2>{table}"
+
+
+def _outcome_learning_signal_reviews_section(rows: list[dict[str, Any]]) -> str:
+    table = _table(
+        ["review_id", "signal_id", "reviewer_id", "decision", "promotion", "recompute",
+         "promoted_evidence_ids", "recomputed_belief_ids", "created_at", "notes"],
+        [
+            [
+                _esc(r["review_id"]), _esc(r["signal_id"]), _esc(r["reviewer_id"]),
+                _tag(r["decision"], r["decision"]),
+                _tag("yes", "support") if r["promotion_requested"] else _tag("no", "not_required"),
+                _tag("yes", "support") if r["recompute_requested"] else _tag("no", "not_required"),
+                _esc(", ".join(r["promoted_evidence_ids"])),
+                _esc(", ".join(r["recomputed_belief_ids"])),
+                _esc(r["created_at"]),
+                _esc(r["notes"]),
+            ]
+            for r in rows
+        ],
+        empty="No outcome-learning signal reviews stored.",
+        wrap_columns={6, 7, 9},
+    )
+    return f"<h2>Outcome learning signal reviews</h2>{table}"
 
 
 def render_html(view_model: ViewModel) -> str:
@@ -771,6 +858,7 @@ def render_html(view_model: ViewModel) -> str:
 {_recommendations_section(view_model.recommendations)}
 {_recommendation_outcomes_section(view_model.recommendation_outcomes)}
 {_outcome_learning_signals_section(view_model.outcome_learning_signals)}
+{_outcome_learning_signal_reviews_section(view_model.outcome_learning_signal_reviews)}
 </body>
 </html>
 """

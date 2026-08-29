@@ -60,6 +60,7 @@ from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
 from src.recommendations.models import (
     OutcomeLearningSignal,
+    OutcomeLearningSignalReview,
     RecommendationOutcome,
     UserRecommendation,
 )
@@ -144,6 +145,16 @@ CREATE TABLE IF NOT EXISTS outcome_learning_signals (
 );
 CREATE INDEX IF NOT EXISTS idx_outcome_learning_signals_scope
     ON outcome_learning_signals (user_id, recommendation_context, id);
+
+CREATE TABLE IF NOT EXISTS outcome_learning_signal_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_id TEXT NOT NULL UNIQUE,
+    signal_id TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outcome_learning_signal_reviews_scope
+    ON outcome_learning_signal_reviews (signal_id, id);
 """
 
 
@@ -790,3 +801,62 @@ class Repository:
         query += " ORDER BY id ASC"
         rows = self._conn.execute(query, params).fetchall()
         return [OutcomeLearningSignal.model_validate_json(row[0]) for row in rows]
+
+    # ---------------------------------- outcome-learning signal reviews --
+
+    def insert_outcome_learning_signal_review(self, review: OutcomeLearningSignalReview) -> None:
+        """Append-only insert for one manual review of an outcome-learning
+        signal (blueprint section 6.4's manual-review gate). Re-validates
+        through ``OutcomeLearningSignalReview`` first -- so a rejected review
+        that also claims to have promoted evidence, or a payload carrying a
+        reviewer-only field it should not, fails before a byte is written --
+        then, writing nothing on failure, checks the reviewed signal exists.
+
+        ``review_id`` is ``UNIQUE``; the same signal may carry several
+        reviews over time. Recording a review never mutates the signal or
+        promotes anything itself -- that is
+        ``src.recommendations.review.review_outcome_learning_signal``'s job,
+        which calls the sanctioned ``promote_outcome_learning_signal`` and
+        records the result on the review it then stores here.
+        """
+        validated = OutcomeLearningSignalReview.model_validate(review.model_dump())
+        if self.get_outcome_learning_signal(validated.signal_id) is None:
+            raise ValueError(
+                f"cannot insert review {validated.review_id!r}: no outcome-learning signal "
+                f"{validated.signal_id!r} is stored"
+            )
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO outcome_learning_signal_reviews "
+                "(review_id, signal_id, decision, data) VALUES (?, ?, ?, ?)",
+                (
+                    validated.review_id,
+                    validated.signal_id,
+                    validated.decision.value,
+                    validated.model_dump_json(),
+                ),
+            )
+
+    def get_outcome_learning_signal_review(
+        self, review_id: str
+    ) -> OutcomeLearningSignalReview | None:
+        row = self._conn.execute(
+            "SELECT data FROM outcome_learning_signal_reviews WHERE review_id = ?", (review_id,)
+        ).fetchone()
+        return OutcomeLearningSignalReview.model_validate_json(row[0]) if row else None
+
+    def list_outcome_learning_signal_reviews(
+        self, *, signal_id: str | None = None
+    ) -> list[OutcomeLearningSignalReview]:
+        """Every stored review, optionally scoped to one signal, oldest
+        first -- the full append-only audit trail for that signal."""
+        if signal_id is not None:
+            rows = self._conn.execute(
+                "SELECT data FROM outcome_learning_signal_reviews WHERE signal_id = ? ORDER BY id ASC",
+                (signal_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT data FROM outcome_learning_signal_reviews ORDER BY id ASC"
+            ).fetchall()
+        return [OutcomeLearningSignalReview.model_validate_json(row[0]) for row in rows]

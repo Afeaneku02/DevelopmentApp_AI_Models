@@ -134,6 +134,29 @@ signal cannot add a second row. Nothing is written without `--persist`;
 without `--recompute` the affected beliefs are left
 `locked_until_recompute`.
 
+Record a manual review of a signal instead of promoting it ad hoc, so the
+decision is auditable:
+
+```bash
+python tools/review_outcome_learning_signal.py --db canonical.sqlite3 --signal-id ols-... \
+    --review-id rev_1 --reviewer-id alice --decision rejected --notes "self-report only"
+python tools/review_outcome_learning_signal.py --db canonical.sqlite3 --signal-id ols-... \
+    --review-id rev_2 --reviewer-id alice --decision approved --promote --recompute \
+    --notes "repeated positive trials, low risk"
+```
+
+Each review is appended to `outcome_learning_signal_reviews` with its
+`reviewer_id`, `decision`, `notes`, `created_at`, and `policy_version`. A
+`rejected` review promotes nothing. An `approved` review promotes only when
+`--promote` is passed (and recomputes only with `--recompute`), delegating to
+the same gated `promote_outcome_learning_signal` and recording exactly what it
+did on the review. A signal that already has an approved review is not
+re-approved unless `--allow-duplicate` is given, and then both reviews stay in
+the trail. The `--decision` and `--reviewer-id` always come from these flags,
+never from model output -- `OutcomeLearningSignalReviewProposal` (the only
+LLM-fillable surface) carries just `signal_id` and an optional
+`suggested_notes`.
+
 Inspect a stored user model:
 
 ```bash
@@ -143,8 +166,9 @@ python tools/inspect_user_model.py --db canonical.sqlite3 --user-id usr_31 --inc
 The inspector and the HTML viewer both show the full loop from the SQLite
 database -- events, observations, observation-event links, evidence, beliefs,
 belief-key canonicalization decisions, recommendations, recommendation
-outcomes, and outcome-learning signals (each flagged with whether it has
-been promoted into belief_evidence). Both are strictly read-only.
+outcomes, outcome-learning signals (each flagged with whether it has been
+promoted into belief_evidence and where it stands in manual review), and the
+outcome-learning signal reviews themselves. Both are strictly read-only.
 
 View the same data as an HTML page instead of JSON:
 
@@ -195,6 +219,11 @@ seed and use a throwaway demo database.
 - `tools/promote_outcome_learning_signal.py`: promote one outcome-learning
   signal's proposals into real belief_evidence after deterministic checks.
   Dry run unless `--persist`; locks affected beliefs unless `--recompute`.
+- `tools/review_outcome_learning_signal.py`: append one auditable manual
+  review (`approved` / `rejected`, reviewer, notes) of an outcome-learning
+  signal. A rejection promotes nothing; an approval promotes only with
+  `--promote` (and recomputes only with `--recompute`), via the same gated
+  promotion path. Duplicate approvals are blocked unless `--allow-duplicate`.
 - `tools/run_manifest.py`: run a JSON manifest through the existing tools.
 
 ## Manifest References
@@ -241,8 +270,9 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
   (`tools/make_recommendation.py`): candidate actions come from a fixed
   template table and an auditable heuristic score, not an LLM or a learned
   ranker.
-- Manual-review queues are represented by decisions/statuses, not a full review
-  product workflow.
+- Manual-review queues are represented by decisions/statuses and a per-signal
+  review CLI (`tools/review_outcome_learning_signal.py`), not a full review
+  product workflow with a queue UI or reviewer assignment.
 - The canonical belief-key registry is intentionally small and exact-match
   only.
 - Outcome-learning promotion is manual and one signal at a time
@@ -251,6 +281,7 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
 
 ## Good Next Step
 
-Add a review/queue workflow around `promote_outcome_learning_signal`: surface
-the promotable signals, let a reviewer approve or reject each, and record the
-decision -- rather than promoting them one CLI call at a time.
+Build a promotable-signal queue on top of `outcome_learning_signal_reviews`:
+list the signals still `pending` review with their trial breakdowns, let a
+reviewer work through them, and track reviewer assignment and policy-version
+churn -- rather than reviewing one signal per CLI call.

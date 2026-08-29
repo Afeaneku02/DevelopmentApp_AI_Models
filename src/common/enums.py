@@ -191,6 +191,25 @@ class OutcomeLearningSignalKind(str, Enum):
     NO_SIGNAL = "no_signal"
 
 
+class OutcomeLearningReviewDecision(str, Enum):
+    """A manual reviewer's decision on whether an outcome-learning signal
+    may be promoted into belief_evidence (blueprint section 6.4's
+    manual-review gate, applied to the section 12.6 learning loop). Owned by
+    a human/backend reviewer, never by model output."""
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class OutcomeLearningReviewStatus(str, Enum):
+    """The current review state of an outcome-learning signal, derived from
+    its most recent review (``pending`` when it has none yet)."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class ContextEligibilityReason(str, Enum):
     """Why one belief was or was not authorized for use in a given
     recommendation context (blueprint sections 6.4 and 6.5). Every value
