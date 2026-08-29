@@ -91,6 +91,44 @@ class SensitivityClass(str, Enum):
     RESTRICTED = "restricted"
 
 
+class RecommendationRiskTier(str, Enum):
+    """recommendation_context_policy.default_risk_tier / the final resolved
+    ``risk_tier`` on a recommendation (blueprint section 6.4). Backend policy
+    owns this value end to end: an LLM may label the semantic recommendation
+    context, but it may never invent, lower, or override the tier."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class ContextResolutionPath(str, Enum):
+    """How ``risk_tier`` for a recommendation context was resolved, persisted
+    with the recommendation for auditability (blueprint section 6.4:
+    "normalize context_key -> exact context policy -> parent/domain
+    risk_domain_policy -> global conservative fallback")."""
+
+    EXACT_CONTEXT_POLICY = "exact_context_policy"
+    RISK_DOMAIN_POLICY = "risk_domain_policy"
+    GLOBAL_CONSERVATIVE_FALLBACK = "global_conservative_fallback"
+
+
+class ContextEligibilityReason(str, Enum):
+    """Why one belief was or was not authorized for use in a given
+    recommendation context (blueprint sections 6.4 and 6.5). Every value
+    except ``allowed`` is a deterministic block reason."""
+
+    ALLOWED = "allowed"
+    BLOCKED_INCOMPLETE_POLICY_RESOLUTION = "blocked_incomplete_policy_resolution"
+    BLOCKED_LOCKED = "blocked_locked_until_recompute"
+    BLOCKED_STATUS = "blocked_status"
+    BLOCKED_STATUS_NOT_PERMITTED_BY_CONTEXT = "blocked_status_not_permitted_by_context"
+    BLOCKED_BELIEF_TYPE = "blocked_belief_type"
+    BLOCKED_SENSITIVITY = "blocked_sensitivity_class"
+    BLOCKED_DISALLOWED_CONTEXT = "blocked_disallowed_context"
+    BLOCKED_NOT_IN_ALLOWED_CONTEXTS = "blocked_not_in_allowed_contexts"
+
+
 class PersistencePolicy(str, Enum):
     SESSION = "session"
     SHORT_TERM = "short_term"
