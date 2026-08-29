@@ -58,7 +58,7 @@ from src.beliefs.canonicalization import BeliefKeyCanonicalization
 from src.common.provenance import validate_belief_evidence_provenance, validate_observation_provenance
 from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
-from src.recommendations.models import UserRecommendation
+from src.recommendations.models import RecommendationOutcome, UserRecommendation
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS user_events (
@@ -121,6 +121,15 @@ CREATE TABLE IF NOT EXISTS recommendations (
 );
 CREATE INDEX IF NOT EXISTS idx_recommendations_scope
     ON recommendations (user_id, recommendation_context, id);
+
+CREATE TABLE IF NOT EXISTS recommendation_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    outcome_id TEXT NOT NULL UNIQUE,
+    recommendation_id TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recommendation_outcomes_scope
+    ON recommendation_outcomes (recommendation_id, id);
 """
 
 
@@ -643,3 +652,56 @@ class Repository:
         query += " ORDER BY id ASC"
         rows = self._conn.execute(query, params).fetchall()
         return [UserRecommendation.model_validate_json(row[0]) for row in rows]
+
+    # -------------------------------------------- recommendation outcomes --
+
+    def insert_recommendation_outcome(self, outcome: RecommendationOutcome) -> None:
+        """Append-only insert for one recommendation outcome (blueprint
+        section 5 "recommendation_outcomes"). Re-validates through
+        ``RecommendationOutcome`` first, then -- writing nothing on failure
+        -- checks that ``outcome.recommendation_id`` names a recommendation
+        that actually exists in this database, the same fail-before-write
+        provenance discipline as ``insert_observation()`` /
+        ``insert_evidence()``.
+
+        Many outcomes may reference one ``recommendation_id`` (a first
+        report, a later follow-up, a measured signal arriving separately);
+        only ``outcome_id`` is ``UNIQUE``, raising ``sqlite3.IntegrityError``
+        for a repeat. This never touches the ``recommendations`` row it
+        points at -- the recommendation's frozen decision state is
+        immutable once written.
+        """
+        validated = RecommendationOutcome.model_validate(outcome.model_dump())
+        if self.get_recommendation(validated.recommendation_id) is None:
+            raise ValueError(
+                f"cannot insert outcome {validated.outcome_id!r}: no recommendation "
+                f"{validated.recommendation_id!r} exists in this database"
+            )
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO recommendation_outcomes (outcome_id, recommendation_id, data) "
+                "VALUES (?, ?, ?)",
+                (validated.outcome_id, validated.recommendation_id, validated.model_dump_json()),
+            )
+
+    def get_recommendation_outcome(self, outcome_id: str) -> RecommendationOutcome | None:
+        row = self._conn.execute(
+            "SELECT data FROM recommendation_outcomes WHERE outcome_id = ?", (outcome_id,)
+        ).fetchone()
+        return RecommendationOutcome.model_validate_json(row[0]) if row else None
+
+    def list_recommendation_outcomes(
+        self, *, recommendation_id: str | None = None
+    ) -> list[RecommendationOutcome]:
+        """Every stored outcome, optionally scoped to one recommendation,
+        oldest first -- the full append-only trail for that recommendation."""
+        if recommendation_id is not None:
+            rows = self._conn.execute(
+                "SELECT data FROM recommendation_outcomes WHERE recommendation_id = ? ORDER BY id ASC",
+                (recommendation_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT data FROM recommendation_outcomes ORDER BY id ASC"
+            ).fetchall()
+        return [RecommendationOutcome.model_validate_json(row[0]) for row in rows]

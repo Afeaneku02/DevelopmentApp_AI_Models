@@ -42,6 +42,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.common.enums import (
     ContextEligibilityReason,
+    OutcomeFollowed,
+    OutcomeResult,
     RecommendationReviewStatus,
     RecommendationRiskTier,
     ResolutionMode,
@@ -180,3 +182,48 @@ class UserRecommendation(VersionedModel):
         elif self.belief_ids_used:
             raise ValueError("belief_ids_used is non-empty but no candidate is marked selected")
         return self
+
+
+class RecommendationOutcome(VersionedModel):
+    """One observation of what happened after a persisted recommendation
+    (blueprint section 5 "recommendation_outcomes", section 12.6).
+
+    Purely descriptive -- it records *what was observed*, never *why*. There
+    is deliberately no field linking an outcome to a belief or asserting the
+    recommendation caused the result (section F: "Do not assume correlation
+    proves why a recommendation worked"). The only link is
+    ``recommendation_id``. Mapping outcomes back to evidence and updating
+    belief confidence is a separate, later step and does not happen here.
+
+    Append-only: many outcomes may reference the same ``recommendation_id``
+    (a first report, a later follow-up, a measured signal arriving after the
+    user's feedback); only ``outcome_id`` is unique. Recording an outcome
+    never mutates the recommendation it points at -- the recommendation's
+    ``frozen_belief_state`` and every other field stay exactly as decided.
+
+    Three independent signals, kept separate on purpose (section 12.6:
+    "Separate user feedback from measured behavior"):
+
+    - ``followed`` -- did the user act on the recommendation (behavior)?
+    - ``result`` -- how did things turn out (classification)?
+    - ``user_feedback`` -- what did the user say about it (free text)?
+      with ``measured_result`` for any measured/behavioral signal.
+    """
+
+    outcome_id: str = Field(min_length=1)
+    recommendation_id: str = Field(min_length=1)
+
+    followed: OutcomeFollowed
+    result: OutcomeResult
+    user_feedback: str | None = None
+    measured_result: str | None = None
+
+    # Where this outcome record came from (e.g. "app_event", "user_survey",
+    # "support_ticket", "manual"). Required so a later learning step can weigh
+    # self-report against measured behavior.
+    source: str = Field(min_length=1)
+
+    # When the outcome was observed (may be earlier than, or absent when
+    # different from, ``created_at``, which is when this row was written).
+    observed_at: datetime | None = None
+    created_at: datetime

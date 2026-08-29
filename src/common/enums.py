@@ -151,6 +151,33 @@ class ResolutionMode(str, Enum):
     DOMAIN_POLICY_APPROVAL = "domain_policy_approval"
 
 
+class OutcomeFollowed(str, Enum):
+    """recommendation_outcomes.followed (blueprint section 5, section 12.6:
+    "Define what counts as followed, ignored, partially followed ... and
+    unknown"). This is the user's *behavior* relative to the recommendation,
+    kept separate from ``OutcomeResult`` (what happened) and from
+    ``user_feedback`` (what the user said)."""
+
+    FOLLOWED = "followed"
+    PARTIALLY_FOLLOWED = "partially_followed"
+    NOT_FOLLOWED = "not_followed"
+    IGNORED = "ignored"
+    UNKNOWN = "unknown"
+
+
+class OutcomeResult(str, Enum):
+    """recommendation_outcomes.result (blueprint section 5, section 12.6).
+    A classification of what was observed after the recommendation -- never
+    a causal claim that the recommendation produced it (section F: "Do not
+    assume correlation proves why a recommendation worked")."""
+
+    SUCCESSFUL = "successful"
+    MIXED = "mixed"
+    UNSUCCESSFUL = "unsuccessful"
+    NOT_YET_KNOWN = "not_yet_known"
+    UNKNOWN = "unknown"
+
+
 class ContextEligibilityReason(str, Enum):
     """Why one belief was or was not authorized for use in a given
     recommendation context (blueprint sections 6.4 and 6.5). Every value

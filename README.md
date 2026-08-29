@@ -67,6 +67,20 @@ manual-review contexts persist a `pending` recommendation instead of issuing
 one. Every record freezes the belief state it saw and records the risk tier,
 resolution path, and policy versions used.
 
+Record what happened after a recommendation:
+
+```bash
+python tools/add_recommendation_outcome.py --db canonical.sqlite3 \
+    --outcome-id out_1 --recommendation-id rec_1 \
+    --followed followed --result successful --source app_event \
+    --user-feedback "did the after-work slot, felt easier"
+```
+
+Outcomes are append-only and descriptive: many outcomes can reference one
+recommendation, an outcome must point at an existing recommendation, and
+recording one never changes the recommendation's frozen state. Nothing here
+updates beliefs -- mapping outcomes back to evidence is a later step.
+
 Inspect a stored user model:
 
 ```bash
@@ -111,6 +125,10 @@ seed and use a throwaway demo database.
 - `tools/make_recommendation.py`: generate and persist one deterministic
   recommendation for a user in a context, using only beliefs authorized by
   the recommendation context/risk policy.
+- `tools/add_recommendation_outcome.py`: append one outcome (followed /
+  result / user feedback / measured result / source) for an existing
+  recommendation. Descriptive only -- no causal claim, does not update
+  beliefs.
 - `tools/run_manifest.py`: run a JSON manifest through the existing tools.
 
 ## Manifest References
@@ -164,6 +182,7 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
 
 ## Good Next Step
 
-Add a `recommendation_outcomes` record and an outcome-learning loop: capture
-whether a persisted recommendation was followed and what happened, and map
-outcomes back to the frozen belief state conservatively (no causal claims).
+Add the outcome-learning loop on top of the recorded `recommendation_outcomes`:
+map repeated outcomes back to the recommendation's frozen belief state and
+adjust belief confidence conservatively, without claiming causality and only
+after enough repeated trials.
