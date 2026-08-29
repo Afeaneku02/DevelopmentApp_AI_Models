@@ -58,6 +58,7 @@ from src.beliefs.canonicalization import BeliefKeyCanonicalization
 from src.common.provenance import validate_belief_evidence_provenance, validate_observation_provenance
 from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
+from src.recommendations.models import UserRecommendation
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS user_events (
@@ -109,6 +110,17 @@ CREATE TABLE IF NOT EXISTS belief_key_canonicalizations (
 );
 CREATE INDEX IF NOT EXISTS idx_belief_key_canonicalizations_scope
     ON belief_key_canonicalizations (user_id, belief_type, proposed_key, id);
+
+CREATE TABLE IF NOT EXISTS recommendations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recommendation_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    recommendation_context TEXT NOT NULL,
+    risk_tier TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recommendations_scope
+    ON recommendations (user_id, recommendation_context, id);
 """
 
 
@@ -573,3 +585,61 @@ class Repository:
         query += " ORDER BY id ASC"
         rows = self._conn.execute(query, params).fetchall()
         return [BeliefKeyCanonicalization.model_validate_json(row[0]) for row in rows]
+
+    # --------------------------------------------------- recommendations --
+
+    def insert_recommendation(self, recommendation: UserRecommendation) -> None:
+        """Append-only insert for one recommendation decision (blueprint
+        section 5 "recommendations"). Re-validates through
+        ``UserRecommendation`` first -- the same "re-validation, not the type
+        hint, is what enforces this" pattern as every other insert_*() method
+        -- so a record missing a version field, an inconsistent review gate,
+        or an unfrozen decision state fails before a byte is written.
+
+        ``recommendation_id`` is ``UNIQUE`` at the schema level, raising
+        ``sqlite3.IntegrityError`` for a repeat, the same stable-unique-id
+        contract as ``event_id`` / ``evidence_id`` / ``canonicalization_id``.
+        This never recomputes a belief, reads live belief rows at read time,
+        or issues a review decision -- the record's ``frozen_belief_state``
+        is authoritative for what the recommendation saw.
+        """
+        validated = UserRecommendation.model_validate(recommendation.model_dump())
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO recommendations "
+                "(recommendation_id, user_id, recommendation_context, risk_tier, data) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    validated.recommendation_id,
+                    validated.user_id,
+                    validated.recommendation_context,
+                    validated.risk_tier.value,
+                    validated.model_dump_json(),
+                ),
+            )
+
+    def get_recommendation(self, recommendation_id: str) -> UserRecommendation | None:
+        row = self._conn.execute(
+            "SELECT data FROM recommendations WHERE recommendation_id = ?", (recommendation_id,)
+        ).fetchone()
+        return UserRecommendation.model_validate_json(row[0]) if row else None
+
+    def list_recommendations(
+        self, *, user_id: str | None = None, recommendation_context: str | None = None
+    ) -> list[UserRecommendation]:
+        """Every stored recommendation, optionally scoped by user and/or
+        resolved context, oldest first."""
+        clauses: list[str] = []
+        params: list[str] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if recommendation_context is not None:
+            clauses.append("recommendation_context = ?")
+            params.append(recommendation_context)
+        query = "SELECT data FROM recommendations"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id ASC"
+        rows = self._conn.execute(query, params).fetchall()
+        return [UserRecommendation.model_validate_json(row[0]) for row in rows]

@@ -285,3 +285,39 @@ def domain_fallback_context_policy(domain: RiskDomainPolicy) -> RecommendationCo
         allow_exploration=False,
         requires_user_confirmation=True,
     )
+
+
+# ------------------------------ recommendation ranking heuristic (MVP, 6.4) --
+
+# The deterministic candidate-ranking heuristic behind ``ranking_score`` on a
+# recommendation. Blueprint section 3.2: "rank candidates using auditable
+# heuristic scores" until learned ranking has data; section 12.5: "policy
+# constraints so weak inferences cannot drive high-impact recommendations
+# alone". Versioned like every other scoring/policy table so a historical
+# recommendation's score is replayable.
+RECOMMENDATION_RANKING_VERSION = "rec-ranking-0.6"
+
+
+@dataclass(frozen=True)
+class RecommendationRankingWeights:
+    """``ranking_score = confidence * status_weight * diversity_factor``,
+    where ``diversity_factor = diversity_floor + (1 - diversity_floor) *
+    min(1, effective_evidence_count / expected_source_types)``.
+
+    ``status_weight`` deliberately has no entry for ``outdated`` / ``rejected``
+    / ``contested`` -- those never reach ranking (``authorize_beliefs_for_context``
+    excludes them), and a missing key scores 0.0 as a fail-safe.
+    """
+
+    status_weight: dict[BeliefStatus, float]
+    diversity_floor: float
+
+
+RECOMMENDATION_RANKING = RecommendationRankingWeights(
+    status_weight={
+        BeliefStatus.CANDIDATE: 0.50,
+        BeliefStatus.PROVISIONAL: 0.75,
+        BeliefStatus.VALIDATED: 1.00,
+    },
+    diversity_floor=0.5,
+)

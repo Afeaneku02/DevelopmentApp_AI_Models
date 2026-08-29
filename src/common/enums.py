@@ -113,6 +113,44 @@ class ContextResolutionPath(str, Enum):
     GLOBAL_CONSERVATIVE_FALLBACK = "global_conservative_fallback"
 
 
+class RiskResolutionPath(str, Enum):
+    """recommendations.risk_resolution_path (blueprint section 5, section 6.4):
+    the path by which a recommendation's ``risk_tier`` was assigned. The
+    first three mirror ``ContextResolutionPath``; the last three are only
+    reached once a manual-review gate has been resolved (not in this MVP)."""
+
+    EXACT_CONTEXT = "exact_context"
+    DOMAIN_POLICY = "domain_policy"
+    GLOBAL_FALLBACK = "global_fallback"
+    MANUAL_REVIEW = "manual_review"
+    USER_CONFIRMATION = "user_confirmation"
+    DOMAIN_APPROVAL = "domain_approval"
+
+
+class RecommendationReviewStatus(str, Enum):
+    """recommendations.review_status (blueprint section 5). ``not_required``
+    is the only value an automatically issued recommendation may carry;
+    every other value implies a manual-review gate that a non-LLM backend
+    actor must resolve."""
+
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    USER_CONFIRMED = "user_confirmed"
+    DOMAIN_POLICY_APPROVED = "domain_policy_approved"
+
+
+class ResolutionMode(str, Enum):
+    """recommendations.required_resolution_mode / actual_resolution_mode
+    (blueprint section 5, section 6.4). Backend policy selects the required
+    mode by risk tier; an LLM may never choose or downgrade it."""
+
+    REVIEWER = "reviewer"
+    EXPLICIT_USER_CONFIRMATION = "explicit_user_confirmation"
+    DOMAIN_POLICY_APPROVAL = "domain_policy_approval"
+
+
 class ContextEligibilityReason(str, Enum):
     """Why one belief was or was not authorized for use in a given
     recommendation context (blueprint sections 6.4 and 6.5). Every value

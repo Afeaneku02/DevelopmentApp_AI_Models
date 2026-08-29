@@ -53,6 +53,20 @@ Run the canonicalization demo manifest:
 python tools/run_manifest.py --db canonical.sqlite3 --manifest tools/manifests/canonicalized_after_work_workout.json
 ```
 
+Generate a recommendation from that model:
+
+```bash
+python tools/make_recommendation.py --db canonical.sqlite3 \
+    --user-id usr_31 --context-key fitness_scheduling --recommendation-id rec_1
+```
+
+The recommendation is deterministic: beliefs are filtered by the context/risk
+policy, candidate actions come from a fixed template table, and the ranking
+score is `confidence * status_weight * diversity_factor`. High-risk or
+manual-review contexts persist a `pending` recommendation instead of issuing
+one. Every record freezes the belief state it saw and records the risk tier,
+resolution path, and policy versions used.
+
 Inspect a stored user model:
 
 ```bash
@@ -94,6 +108,9 @@ seed and use a throwaway demo database.
   HTML page.
 - `tools/serve_user_model.py`: serve that page locally (stdlib `http.server`),
   re-reading the database on every request. Read-only; GET/HEAD only.
+- `tools/make_recommendation.py`: generate and persist one deterministic
+  recommendation for a user in a context, using only beliefs authorized by
+  the recommendation context/risk policy.
 - `tools/run_manifest.py`: run a JSON manifest through the existing tools.
 
 ## Manifest References
@@ -136,7 +153,10 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
   `tools/serve_user_model.py`).
 - There is no live data collection pipeline yet; events are inserted manually
   or through manifests.
-- Recommendation ranking/policy application is not built yet.
+- Recommendation generation is a deterministic MVP
+  (`tools/make_recommendation.py`): candidate actions come from a fixed
+  template table and an auditable heuristic score, not an LLM or a learned
+  ranker.
 - Manual-review queues are represented by decisions/statuses, not a full review
   product workflow.
 - The canonical belief-key registry is intentionally small and exact-match
@@ -144,6 +164,6 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
 
 ## Good Next Step
 
-Build the recommendation loop on top of the context/risk policy foundation in
-`src/recommendations/context_policy.py`: candidate generation and ranking that
-consumes only beliefs already authorized by `authorize_beliefs_for_context`.
+Add a `recommendation_outcomes` record and an outcome-learning loop: capture
+whether a persisted recommendation was followed and what happened, and map
+outcomes back to the frozen belief state conservatively (no causal claims).
