@@ -41,6 +41,28 @@ Important boundaries already implemented:
 
 ## Quick Demo
 
+### See the whole closed loop in one command
+
+```bash
+# 1. build the full loop: event -> observation -> evidence -> canonicalization
+#    -> initial belief -> recommendations -> outcomes -> learning signal
+#    -> promoted belief_evidence -> recomputed belief
+python tools/run_closed_loop_demo.py --db canonical.sqlite3 --run-id demo1
+
+# 2. serve the read-only viewer (http://localhost:8000)
+python tools/serve_user_model.py --db canonical.sqlite3
+
+# 3. inspect the same data as JSON
+python tools/inspect_user_model.py --db canonical.sqlite3 --user-id usr_demo1 --pretty
+```
+
+The demo is deterministic (pin `--run-id` for byte-identical output), makes
+no LLM calls, and needs no external services. Re-running with the same
+`--run-id` refuses and exits 1; use a new `--run-id` (or a fresh `--db`) to
+build another independent chain.
+
+### Or run the pieces by hand
+
 Run the basic demo manifest:
 
 ```bash
@@ -138,6 +160,9 @@ seed and use a throwaway demo database.
 
 ## Main Tools
 
+- `tools/run_closed_loop_demo.py`: build the entire loop (event -> ... ->
+  promoted evidence -> recomputed belief) in one deterministic, re-run-safe
+  command.
 - `tools/add_user_event.py`: insert one raw user event.
 - `tools/add_user_observation.py`: insert one observation linked to events.
 - `tools/add_belief_evidence.py`: create authorized belief evidence from an
