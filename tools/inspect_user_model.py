@@ -6,12 +6,13 @@ SQLite database as one JSON document, using the repository's own read/list
 helpers (``list_events``, ``list_observations``,
 ``list_observation_events_for``, ``list_all_evidence``,
 ``list_latest_beliefs``, ``list_belief_key_canonicalizations``,
-``list_recommendations``, ``list_recommendation_outcomes``) -- never direct
-SQL, and never a write path. This CLI performs no inserts, updates,
-invalidations, recomputes, or recommendation issuance; it exists purely to
-answer "what is actually in this database right now" after using the other
-CLIs. A database opened before a given table existed simply reports that
-key as an empty list.
+``list_recommendations``, ``list_recommendation_outcomes``,
+``list_outcome_learning_signals``) -- never direct SQL, and never a write
+path. This CLI performs no inserts, updates, invalidations, recomputes,
+recommendation issuance, or outcome-learning evidence promotion; it exists
+purely to answer "what is actually in this database right now" after using
+the other CLIs. A database opened before a given table existed simply
+reports that key as an empty list.
 
 ``readonly_at_path()`` (not the writable ``at_path()`` every intake CLI
 uses) is what actually makes this true rather than merely intended: it opens
@@ -62,8 +63,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Dump events, observations, observation_events, evidence, the latest beliefs, "
-            "belief-key canonicalization decisions, recommendations, and recommendation "
-            "outcomes currently stored in a Repository. Read-only -- makes no changes."
+            "belief-key canonicalization decisions, recommendations, recommendation outcomes, "
+            "and outcome-learning signals currently stored in a Repository. Read-only -- makes "
+            "no changes."
         ),
     )
     parser.add_argument("--db", required=True, help="Path to the SQLite database file.")
@@ -109,6 +111,9 @@ def main(argv: list[str] | None = None) -> int:
             for o in _list_or_empty(repo.list_recommendation_outcomes)
             if o.recommendation_id in shown_recommendation_ids
         ]
+        outcome_learning_signals = _list_or_empty(
+            repo.list_outcome_learning_signals, user_id=args.user_id
+        )
     finally:
         repo.close()
 
@@ -122,6 +127,9 @@ def main(argv: list[str] | None = None) -> int:
         "recommendations": [json.loads(r.model_dump_json()) for r in recommendations],
         "recommendation_outcomes": [
             json.loads(o.model_dump_json()) for o in recommendation_outcomes
+        ],
+        "outcome_learning_signals": [
+            json.loads(s.model_dump_json()) for s in outcome_learning_signals
         ],
     }
     print(json.dumps(output, indent=2 if args.pretty else None))

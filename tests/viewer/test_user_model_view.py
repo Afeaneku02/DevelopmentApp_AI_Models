@@ -22,6 +22,7 @@ from src.observations.create_observation import create_observation_from_event
 from src.storage.repository import Repository
 from src.recommendations.engine import generate_recommendation
 from src.recommendations.models import RecommendationOutcome
+from src.recommendations.outcome_learning import analyze_recommendation_outcomes
 from src.viewer.user_model_view import (
     EVIDENCE_STATE_ACTIVE,
     EVIDENCE_STATE_DUPLICATE_SUPPRESSED,
@@ -32,6 +33,7 @@ from src.viewer.user_model_view import (
     evidence_row,
     evidence_state,
     observation_event_row,
+    outcome_learning_signal_row,
     recommendation_outcome_row,
     recommendation_row,
     render_html,
@@ -233,6 +235,7 @@ class RenderHtmlTests(unittest.TestCase):
         for heading in (
             "Events", "Observations", "Observation-event links", "Evidence", "Beliefs",
             "Belief-key canonicalization", "Recommendations", "Recommendation outcomes",
+            "Outcome learning signals",
         ):
             self.assertIn(heading, page)
         self.assertIn("No events stored.", page)
@@ -409,6 +412,94 @@ class RecommendationAndOutcomeRowTests(unittest.TestCase):
             repo.close()
         self.assertIn("No recommendations stored.", page)
         self.assertIn("No recommendation outcomes stored.", page)
+        self.assertIn("No outcome-learning signals stored.", page)
+
+
+class OutcomeLearningSignalViewerTests(unittest.TestCase):
+    def _seed_signal(self, repo: Repository, *, user_id: str = USER_ID, context: str = "fitness_scheduling"):
+        recs = []
+        outcomes = []
+        for index in range(1, 5):
+            rec_id = f"rec_{user_id}_{index}"
+            rec = generate_recommendation(
+                recommendation_id=rec_id, user_id=user_id, context_key=context,
+                beliefs=[_usable_belief().model_copy(update={"user_id": user_id})], created_at=AS_OF,
+            )
+            repo.save_belief(_usable_belief().model_copy(update={"user_id": user_id}))
+            repo.insert_recommendation(rec)
+            recs.append(rec)
+            outcome = RecommendationOutcome(
+                outcome_id=f"out_{user_id}_{index}", recommendation_id=rec_id, followed="followed",
+                result="successful", source="app_event",
+                created_at=AS_OF + timedelta(days=index), **VERSION_FIELDS,
+            )
+            repo.insert_recommendation_outcome(outcome)
+            outcomes.append(outcome)
+        signal = analyze_recommendation_outcomes(recs, outcomes, as_of=AS_OF)[0]
+        repo.insert_outcome_learning_signal(signal)
+        return signal
+
+    def test_signal_row_surfaces_all_the_required_fields(self) -> None:
+        repo = Repository.in_memory()
+        try:
+            signal = self._seed_signal(repo)
+        finally:
+            repo.close()
+        row = outcome_learning_signal_row(signal)
+        for key in (
+            "signal_id", "user_id", "recommendation_context", "kind", "direction", "trial_count",
+            "supportive_count", "adverse_count", "neutral_count", "belief_ids",
+            "recommendation_ids", "outcome_ids", "causal_claim", "created_at", "rationale",
+        ):
+            self.assertIn(key, row)
+        self.assertEqual(row["signal_id"], signal.signal_id)
+        self.assertEqual(row["kind"], "support")
+        self.assertEqual(row["direction"], "support")
+        self.assertEqual(row["trial_count"], 4)
+        self.assertFalse(row["causal_claim"])
+        self.assertEqual(row["proposed_evidence_count"], 1)
+        self.assertEqual(row["proposed_evidence"][0]["belief_id"], row["belief_ids"][0])
+        self.assertEqual(row["proposed_evidence"][0]["direction"], "support")
+
+    def test_collect_view_model_includes_stored_signals(self) -> None:
+        repo = Repository.in_memory()
+        try:
+            signal = self._seed_signal(repo)
+            view_model = collect_view_model(repo, db_path=":memory:")
+        finally:
+            repo.close()
+        self.assertEqual(
+            [s["signal_id"] for s in view_model.outcome_learning_signals], [signal.signal_id]
+        )
+        summary = view_model.summary()
+        self.assertEqual(summary["outcome_learning_signals"], 1)
+        self.assertEqual(summary["outcome_learning_signals_by_kind"], {"support": 1})
+        self.assertEqual(summary["outcome_learning_proposed_evidence"], 1)
+
+    def test_render_html_shows_the_section_with_the_signal_id(self) -> None:
+        repo = Repository.in_memory()
+        try:
+            signal = self._seed_signal(repo)
+            page = render_html(collect_view_model(repo, db_path="demo.sqlite3"))
+        finally:
+            repo.close()
+        self.assertIn("Outcome learning signals", page)
+        self.assertIn(signal.signal_id, page)
+        self.assertIn("fitness_scheduling", page)
+
+    def test_signals_are_scoped_to_the_requested_user(self) -> None:
+        repo = Repository.in_memory()
+        try:
+            mine = self._seed_signal(repo, user_id="usr_a")
+            self._seed_signal(repo, user_id="usr_b")
+            scoped = collect_view_model(repo, db_path=":memory:", user_id="usr_a")
+            page = render_html(scoped)
+        finally:
+            repo.close()
+        self.assertEqual(
+            [s["signal_id"] for s in scoped.outcome_learning_signals], [mine.signal_id]
+        )
+        self.assertNotIn("usr_b", page)
 
 
 if __name__ == "__main__":

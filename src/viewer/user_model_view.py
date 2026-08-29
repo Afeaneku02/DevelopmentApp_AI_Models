@@ -7,11 +7,13 @@ Everything here is read-only and side-effect free:
   helpers only (``list_events``, ``list_observations``,
   ``list_observation_events_for``, ``list_all_evidence``,
   ``list_latest_beliefs``, ``list_belief_key_canonicalizations``,
-  ``list_recommendations``, ``list_recommendation_outcomes``) -- never
-  direct SQL, never a write path. It recomputes nothing, suppresses
-  nothing, invalidates nothing, canonicalizes nothing, and issues no
-  recommendation. A database opened before the recommendation tables
-  existed simply shows those sections empty (see ``_list_or_empty``).
+  ``list_recommendations``, ``list_recommendation_outcomes``,
+  ``list_outcome_learning_signals``) -- never direct SQL, never a write
+  path. It recomputes nothing, suppresses nothing, invalidates nothing,
+  canonicalizes nothing, issues no recommendation, and promotes no
+  outcome-learning proposal into evidence. A database opened before the
+  recommendation tables existed simply shows those sections empty (see
+  ``_list_or_empty``).
 - Every ``*_row()`` function is a plain projection of one already-persisted
   record onto the handful of fields the viewer shows.
 - ``render_html()`` turns the collected view model into a single
@@ -37,7 +39,11 @@ from src.beliefs.canonicalization import BeliefKeyCanonicalization
 from src.beliefs.models import BeliefEvidence, UserBelief
 from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
-from src.recommendations.models import RecommendationOutcome, UserRecommendation
+from src.recommendations.models import (
+    OutcomeLearningSignal,
+    RecommendationOutcome,
+    UserRecommendation,
+)
 
 # The three mutually exclusive states the viewer buckets evidence into, in
 # precedence order: an invalidated row is "inactive" even if it was also
@@ -212,6 +218,41 @@ def recommendation_outcome_row(outcome: RecommendationOutcome) -> dict[str, Any]
     }
 
 
+def outcome_learning_signal_row(signal: OutcomeLearningSignal) -> dict[str, Any]:
+    """One outcome-learning signal, projected onto the fields the viewer
+    shows. ``proposed_evidence`` is summarised, not expanded: its count plus
+    a compact ``belief_id:direction@strength`` list, so the section stays
+    readable while still showing what evidence was proposed."""
+    proposed = [
+        {
+            "belief_id": p.belief_id,
+            "direction": p.direction.value,
+            "strength": p.strength,
+        }
+        for p in signal.proposed_evidence
+    ]
+    return {
+        "signal_id": signal.signal_id,
+        "user_id": signal.user_id,
+        "recommendation_context": signal.recommendation_context,
+        "kind": signal.kind.value,
+        "direction": signal.direction.value if signal.direction is not None else None,
+        "trial_count": signal.trial_count,
+        "supportive_count": signal.supportive_count,
+        "adverse_count": signal.adverse_count,
+        "neutral_count": signal.neutral_count,
+        "belief_ids": list(signal.belief_ids),
+        "recommendation_ids": list(signal.recommendation_ids),
+        "outcome_ids": list(signal.outcome_ids),
+        "independence_group": signal.independence_group,
+        "causal_claim": signal.causal_claim,
+        "created_at": _fmt(signal.created_at),
+        "rationale": signal.rationale,
+        "proposed_evidence_count": len(proposed),
+        "proposed_evidence": proposed,
+    }
+
+
 @dataclass
 class ViewModel:
     """Everything the viewer shows, already shaped into plain dict rows."""
@@ -228,6 +269,7 @@ class ViewModel:
     canonicalizations: list[dict[str, Any]] = field(default_factory=list)
     recommendations: list[dict[str, Any]] = field(default_factory=list)
     recommendation_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    outcome_learning_signals: list[dict[str, Any]] = field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
         return summarize(self)
@@ -264,6 +306,12 @@ def summarize(view_model: ViewModel) -> dict[str, Any]:
     for row in view_model.recommendation_outcomes:
         outcomes_by_followed[row["followed"]] = outcomes_by_followed.get(row["followed"], 0) + 1
 
+    signals_by_kind: dict[str, int] = {}
+    proposed_evidence_rows = 0
+    for row in view_model.outcome_learning_signals:
+        signals_by_kind[row["kind"]] = signals_by_kind.get(row["kind"], 0) + 1
+        proposed_evidence_rows += row["proposed_evidence_count"]
+
     return {
         "events": len(view_model.events),
         "observations": len(view_model.observations),
@@ -280,6 +328,9 @@ def summarize(view_model: ViewModel) -> dict[str, Any]:
         "review_required_recommendations": review_required_recommendations,
         "recommendation_outcomes": len(view_model.recommendation_outcomes),
         "outcomes_by_followed": outcomes_by_followed,
+        "outcome_learning_signals": len(view_model.outcome_learning_signals),
+        "outcome_learning_signals_by_kind": signals_by_kind,
+        "outcome_learning_proposed_evidence": proposed_evidence_rows,
     }
 
 
@@ -330,6 +381,10 @@ def collect_view_model(
         for o in _list_or_empty(repo.list_recommendation_outcomes)
         if o.recommendation_id in shown_recommendation_ids
     ]
+    # Learning signals do carry user_id, so the repository filters them directly.
+    outcome_learning_signals = _list_or_empty(
+        repo.list_outcome_learning_signals, user_id=user_id
+    )
 
     return ViewModel(
         db_path=db_path,
@@ -348,6 +403,9 @@ def collect_view_model(
         recommendations=[recommendation_row(r) for r in recommendations],
         recommendation_outcomes=[
             recommendation_outcome_row(o) for o in recommendation_outcomes
+        ],
+        outcome_learning_signals=[
+            outcome_learning_signal_row(s) for s in outcome_learning_signals
         ],
     )
 
@@ -391,6 +449,10 @@ td.wrap { white-space: normal; min-width: 18rem; }
 .tag.medium, .tag.partially_followed, .tag.mixed, .tag.pending { background: #b5860b; color: #fff; }
 .tag.high, .tag.unsuccessful { background: #b02a37; color: #fff; }
 .tag.not_followed, .tag.ignored { background: #8a8f95; color: #fff; }
+.tag.support { background: #0a7d33; color: #fff; }
+.tag.weak_contradiction { background: #b02a37; color: #fff; }
+.tag.no_signal { background: #e7ebf0; color: #444; border: 1px solid #ccc; }
+.tag.contradict { background: #b02a37; color: #fff; }
 .tag.not_required, .tag.unknown, .tag.not_yet_known {
     background: #e7ebf0; color: #444; border: 1px solid #ccc; }
 .empty { color: #888; font-style: italic; margin-bottom: .5rem; }
@@ -434,6 +496,8 @@ def _summary_cards(summary: dict[str, Any]) -> str:
         ("recommendations", summary["recommendations"]),
         ("recs awaiting review", summary["review_required_recommendations"]),
         ("outcomes", summary["recommendation_outcomes"]),
+        ("learning signals", summary["outcome_learning_signals"]),
+        ("proposed evidence", summary["outcome_learning_proposed_evidence"]),
     ]
     parts = [
         f'<div class="card"><div class="n">{int(n)}</div><div class="l">{html.escape(label)}</div></div>'
@@ -602,6 +666,42 @@ def _recommendation_outcomes_section(rows: list[dict[str, Any]]) -> str:
     return f"<h2>Recommendation outcomes</h2>{table}"
 
 
+def _outcome_learning_signals_section(rows: list[dict[str, Any]]) -> str:
+    def _proposed(row: dict[str, Any]) -> str:
+        if not row["proposed_evidence"]:
+            return _esc(row["proposed_evidence_count"])
+        compact = ", ".join(
+            f'{p["belief_id"]}:{p["direction"]}@{p["strength"]}' for p in row["proposed_evidence"]
+        )
+        return f'{row["proposed_evidence_count"]} ({html.escape(compact)})'
+
+    table = _table(
+        ["signal_id", "user_id", "context", "kind", "direction", "trials",
+         "supp/adv/neut", "belief_ids", "recommendation_ids", "outcome_ids",
+         "causal_claim", "proposed_evidence", "created_at", "rationale"],
+        [
+            [
+                _esc(r["signal_id"]), _esc(r["user_id"]), _esc(r["recommendation_context"]),
+                _tag(r["kind"], r["kind"]),
+                _tag(r["direction"], r["direction"]) if r["direction"] else _esc(""),
+                _esc(r["trial_count"]),
+                f'{r["supportive_count"]}/{r["adverse_count"]}/{r["neutral_count"]}',
+                _esc(", ".join(r["belief_ids"])),
+                _esc(", ".join(r["recommendation_ids"])),
+                _esc(", ".join(r["outcome_ids"])),
+                _tag("causal!", "high") if r["causal_claim"] else _tag("none", "not_required"),
+                _proposed(r),
+                _esc(r["created_at"]),
+                _esc(r["rationale"]),
+            ]
+            for r in rows
+        ],
+        empty="No outcome-learning signals stored.",
+        wrap_columns={8, 9, 13},
+    )
+    return f"<h2>Outcome learning signals</h2>{table}"
+
+
 def render_html(view_model: ViewModel) -> str:
     """Render the whole view model to one self-contained HTML page. Pure --
     no I/O, no external resources, no scripts."""
@@ -637,6 +737,7 @@ def render_html(view_model: ViewModel) -> str:
 {_canonicalizations_section(view_model.canonicalizations)}
 {_recommendations_section(view_model.recommendations)}
 {_recommendation_outcomes_section(view_model.recommendation_outcomes)}
+{_outcome_learning_signals_section(view_model.outcome_learning_signals)}
 </body>
 </html>
 """

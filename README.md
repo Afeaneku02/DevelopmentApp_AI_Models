@@ -103,8 +103,8 @@ python tools/inspect_user_model.py --db canonical.sqlite3 --user-id usr_31 --inc
 
 The inspector and the HTML viewer both show the full loop from the SQLite
 database -- events, observations, observation-event links, evidence, beliefs,
-belief-key canonicalization decisions, recommendations, and recommendation
-outcomes. Both are strictly read-only.
+belief-key canonicalization decisions, recommendations, recommendation
+outcomes, and outcome-learning signals. Both are strictly read-only.
 
 View the same data as an HTML page instead of JSON:
 

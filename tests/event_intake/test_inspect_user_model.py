@@ -26,6 +26,7 @@ _RECOMPUTE_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "recompute_b
 _INVALIDATE_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "invalidate_belief_evidence.py"
 _MAKE_REC_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "make_recommendation.py"
 _ADD_OUTCOME_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "add_recommendation_outcome.py"
+_LEARN_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "learn_from_recommendation_outcomes.py"
 
 
 def _run(script: Path, args: list[str]) -> subprocess.CompletedProcess:
@@ -132,7 +133,7 @@ class EmptyDbOutputShapeTests(unittest.TestCase):
                 {
                     "events": [], "observations": [], "observation_events": [], "evidence": [],
                     "beliefs": [], "canonicalizations": [], "recommendations": [],
-                    "recommendation_outcomes": [],
+                    "recommendation_outcomes": [], "outcome_learning_signals": [],
                 },
             )
 
@@ -314,6 +315,25 @@ def _seed_outcome(db_path: str, *, outcome_id: str, recommendation_id: str) -> N
     assert result.returncode == 0, result.stderr
 
 
+def _seed_learning_signal(db_path: str, *, user_id: str, belief_id: str, event_prefix: str) -> None:
+    """Seed a full chain, a belief, then 4 recommendations + 4 successful
+    outcomes for one context, and persist the resulting outcome-learning
+    signal via the learn CLI."""
+    _seed_full_chain(
+        db_path, user_id=user_id, belief_id=belief_id, event_id=f"{event_prefix}_evt",
+        observation_id=f"{event_prefix}_obs", evidence_id=f"{event_prefix}_bev",
+    )
+    _seed_recompute(db_path, belief_id=belief_id, user_id=user_id)
+    for index in range(1, 5):
+        rec_id = f"{event_prefix}_rec_{index}"
+        _seed_recommendation(
+            db_path, recommendation_id=rec_id, user_id=user_id, context_key="fitness_scheduling"
+        )
+        _seed_outcome(db_path, outcome_id=f"{event_prefix}_out_{index}", recommendation_id=rec_id)
+    result = _run(_LEARN_SCRIPT, ["--db", db_path, "--persist"])
+    assert result.returncode == 0, result.stderr
+
+
 class RecommendationsAndOutcomesAppearTests(unittest.TestCase):
     def test_inspector_includes_persisted_recommendations_and_outcomes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -373,6 +393,67 @@ class RecommendationsAndOutcomesAppearTests(unittest.TestCase):
                 repo.close()
             self.assertEqual(before, after)
             self.assertEqual([o.outcome_id for o in outcomes], ["out_1"])
+
+
+class OutcomeLearningSignalsAppearTests(unittest.TestCase):
+    def test_inspector_includes_persisted_outcome_learning_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_learning_signal(db_path, user_id="usr_1", belief_id="bel_1", event_prefix="a")
+
+            result = _run_inspect(["--db", db_path])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            printed = json.loads(result.stdout)
+
+            self.assertEqual(len(printed["outcome_learning_signals"]), 1)
+            signal = printed["outcome_learning_signals"][0]
+            self.assertEqual(signal["user_id"], "usr_1")
+            self.assertEqual(signal["recommendation_context"], "fitness_scheduling")
+            self.assertEqual(signal["kind"], "support")
+            self.assertEqual(signal["trial_count"], 4)
+            self.assertFalse(signal["causal_claim"])
+            self.assertEqual(signal["belief_ids"], ["bel_1"])
+            self.assertEqual(len(signal["proposed_evidence"]), 1)
+
+    def test_user_scoped_inspection_does_not_leak_another_users_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_learning_signal(db_path, user_id="usr_1", belief_id="bel_1", event_prefix="a")
+            _seed_learning_signal(db_path, user_id="usr_2", belief_id="bel_2", event_prefix="b")
+
+            everyone = json.loads(_run_inspect(["--db", db_path]).stdout)
+            self.assertEqual(
+                sorted(s["user_id"] for s in everyone["outcome_learning_signals"]),
+                ["usr_1", "usr_2"],
+            )
+
+            scoped = json.loads(_run_inspect(["--db", db_path, "--user-id", "usr_1"]).stdout)
+            self.assertEqual(
+                [s["user_id"] for s in scoped["outcome_learning_signals"]], ["usr_1"]
+            )
+            serialized = json.dumps(scoped["outcome_learning_signals"])
+            self.assertNotIn("usr_2", serialized)
+            self.assertNotIn("bel_2", serialized)
+
+    def test_inspecting_does_not_mutate_the_stored_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_learning_signal(db_path, user_id="usr_1", belief_id="bel_1", event_prefix="a")
+
+            repo = Repository.at_path(db_path)
+            try:
+                before = [s.model_dump_json() for s in repo.list_outcome_learning_signals()]
+            finally:
+                repo.close()
+
+            self.assertEqual(_run_inspect(["--db", db_path]).returncode, 0)
+
+            repo = Repository.at_path(db_path)
+            try:
+                after = [s.model_dump_json() for s in repo.list_outcome_learning_signals()]
+            finally:
+                repo.close()
+            self.assertEqual(before, after)
 
 
 if __name__ == "__main__":
