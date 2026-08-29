@@ -10,6 +10,7 @@ that the optional query params scope the page.
 from __future__ import annotations
 
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -60,13 +61,21 @@ def _running_server(db_path: str):
 
 
 def _get(url: str) -> tuple[int, str]:
-    try:
-        with urllib.request.urlopen(url, timeout=5) as response:
-            return response.status, response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8")
-        exc.close()
-        return exc.code, body
+    # A transient socket abort (WinError 10053 under load) is not a real
+    # failure of a read-only GET -- retry a couple of times before giving up.
+    last_error: OSError | None = None
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                return response.status, response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8")
+            exc.close()
+            return exc.code, body
+        except (urllib.error.URLError, ConnectionError, OSError) as exc:
+            last_error = exc
+            time.sleep(0.1 * (attempt + 1))
+    raise AssertionError(f"GET {url} failed after retries: {last_error!r}")
 
 
 class ServesHtmlFromARealDatabaseTests(unittest.TestCase):

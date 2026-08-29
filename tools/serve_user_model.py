@@ -119,6 +119,16 @@ def build_handler(db_path: str) -> type[BaseHTTPRequestHandler]:
             if include_body:
                 self.wfile.write(encoded)
 
+        def handle_one_request(self) -> None:
+            # A client that hangs up mid-request/response (common under load
+            # and in tests) raises a connection error here. That is not a
+            # server fault and must not crash the worker thread -- just drop
+            # the connection quietly.
+            try:
+                super().handle_one_request()
+            except (ConnectionError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                self.close_connection = True
+
         def _handle(self, *, include_body: bool) -> None:
             parsed = urlparse(self.path)
             route = parsed.path.rstrip("/") or "/"
@@ -160,11 +170,23 @@ def build_handler(db_path: str) -> type[BaseHTTPRequestHandler]:
     return UserModelViewerHandler
 
 
+class _ViewerHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address) -> None:
+        # A dropped client connection is not a server error worth a
+        # traceback; anything else keeps the default behaviour.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def serve(db_path: str, *, host: str, port: int) -> ThreadingHTTPServer:
     """Build (but do not block on) a server for ``db_path``. The caller runs
     ``serve_forever()``; tests bind port 0 and drive it from a thread."""
     handler = build_handler(db_path)
-    return ThreadingHTTPServer((host, port), handler)
+    return _ViewerHTTPServer((host, port), handler)
 
 
 def main(argv: list[str] | None = None) -> int:
