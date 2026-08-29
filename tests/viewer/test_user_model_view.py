@@ -450,6 +450,7 @@ class OutcomeLearningSignalViewerTests(unittest.TestCase):
             "signal_id", "user_id", "recommendation_context", "kind", "direction", "trial_count",
             "supportive_count", "adverse_count", "neutral_count", "belief_ids",
             "recommendation_ids", "outcome_ids", "causal_claim", "created_at", "rationale",
+            "promoted", "promoted_evidence_ids",
         ):
             self.assertIn(key, row)
         self.assertEqual(row["signal_id"], signal.signal_id)
@@ -457,6 +458,7 @@ class OutcomeLearningSignalViewerTests(unittest.TestCase):
         self.assertEqual(row["direction"], "support")
         self.assertEqual(row["trial_count"], 4)
         self.assertFalse(row["causal_claim"])
+        self.assertFalse(row["promoted"])  # never promoted just by being collected
         self.assertEqual(row["proposed_evidence_count"], 1)
         self.assertEqual(row["proposed_evidence"][0]["belief_id"], row["belief_ids"][0])
         self.assertEqual(row["proposed_evidence"][0]["direction"], "support")
@@ -500,6 +502,32 @@ class OutcomeLearningSignalViewerTests(unittest.TestCase):
             [s["signal_id"] for s in scoped.outcome_learning_signals], [mine.signal_id]
         )
         self.assertNotIn("usr_b", page)
+
+    def test_a_promoted_signal_is_shown_as_promoted(self) -> None:
+        from src.recommendations.promotion import promote_outcome_learning_signal
+        from tests.recommendations.test_promotion import PROMOTED_AT, _seed_model
+
+        repo = Repository.in_memory()
+        try:
+            _, signal = _seed_model(repo)
+            before = collect_view_model(repo, db_path=":memory:").outcome_learning_signals[0]
+            self.assertFalse(before["promoted"])
+
+            promote_outcome_learning_signal(
+                repo, signal_id=signal.signal_id, as_of=PROMOTED_AT, persist=True
+            )
+            view_model = collect_view_model(repo, db_path=":memory:")
+            page = render_html(view_model)
+        finally:
+            repo.close()
+
+        row = view_model.outcome_learning_signals[0]
+        self.assertTrue(row["promoted"])
+        self.assertEqual(len(row["promoted_evidence_ids"]), 1)
+        self.assertEqual(row["promoted_evidence_ids"][0], f"bev-ols-{signal.signal_id}-bel_1")
+        self.assertEqual(view_model.summary()["outcome_learning_signals_promoted"], 1)
+        self.assertIn("promoted signals", page)
+        self.assertIn(row["promoted_evidence_ids"][0], page)
 
 
 if __name__ == "__main__":

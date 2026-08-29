@@ -27,6 +27,7 @@ _INVALIDATE_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "invalidate
 _MAKE_REC_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "make_recommendation.py"
 _ADD_OUTCOME_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "add_recommendation_outcome.py"
 _LEARN_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "learn_from_recommendation_outcomes.py"
+_PROMOTE_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "promote_outcome_learning_signal.py"
 
 
 def _run(script: Path, args: list[str]) -> subprocess.CompletedProcess:
@@ -315,10 +316,10 @@ def _seed_outcome(db_path: str, *, outcome_id: str, recommendation_id: str) -> N
     assert result.returncode == 0, result.stderr
 
 
-def _seed_learning_signal(db_path: str, *, user_id: str, belief_id: str, event_prefix: str) -> None:
+def _seed_learning_signal(db_path: str, *, user_id: str, belief_id: str, event_prefix: str) -> str:
     """Seed a full chain, a belief, then 4 recommendations + 4 successful
-    outcomes for one context, and persist the resulting outcome-learning
-    signal via the learn CLI."""
+    outcomes for one context, persist the resulting outcome-learning signal
+    via the learn CLI, and return its signal_id."""
     _seed_full_chain(
         db_path, user_id=user_id, belief_id=belief_id, event_id=f"{event_prefix}_evt",
         observation_id=f"{event_prefix}_obs", evidence_id=f"{event_prefix}_bev",
@@ -331,6 +332,19 @@ def _seed_learning_signal(db_path: str, *, user_id: str, belief_id: str, event_p
         )
         _seed_outcome(db_path, outcome_id=f"{event_prefix}_out_{index}", recommendation_id=rec_id)
     result = _run(_LEARN_SCRIPT, ["--db", db_path, "--persist"])
+    assert result.returncode == 0, result.stderr
+
+    repo = Repository.at_path(db_path)
+    try:
+        signals = repo.list_outcome_learning_signals(user_id=user_id)
+    finally:
+        repo.close()
+    assert signals, "learn CLI produced no signal"
+    return signals[-1].signal_id
+
+
+def _promote_signal(db_path: str, *, signal_id: str) -> None:
+    result = _run(_PROMOTE_SCRIPT, ["--db", db_path, "--signal-id", signal_id, "--persist"])
     assert result.returncode == 0, result.stderr
 
 
@@ -414,6 +428,28 @@ class OutcomeLearningSignalsAppearTests(unittest.TestCase):
             self.assertFalse(signal["causal_claim"])
             self.assertEqual(signal["belief_ids"], ["bel_1"])
             self.assertEqual(len(signal["proposed_evidence"]), 1)
+            self.assertFalse(signal["promoted"])
+            self.assertEqual(signal["promoted_evidence_ids"], [])
+
+    def test_a_promoted_signal_is_shown_as_promoted_with_its_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            signal_id = _seed_learning_signal(
+                db_path, user_id="usr_1", belief_id="bel_1", event_prefix="a"
+            )
+            _promote_signal(db_path, signal_id=signal_id)
+
+            printed = json.loads(_run_inspect(["--db", db_path]).stdout)
+            signal = printed["outcome_learning_signals"][0]
+            self.assertTrue(signal["promoted"])
+            self.assertEqual(signal["promoted_evidence_ids"], [f"bev-ols-{signal_id}-bel_1"])
+            # the promoted belief_evidence row is itself in the dump
+            promoted_evidence = [
+                e for e in printed["evidence"]
+                if e["source_type"] == "repeated_pattern_summary"
+            ]
+            self.assertEqual(len(promoted_evidence), 1)
+            self.assertEqual(promoted_evidence[0]["independence_group"], signal["independence_group"])
 
     def test_user_scoped_inspection_does_not_leak_another_users_signals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

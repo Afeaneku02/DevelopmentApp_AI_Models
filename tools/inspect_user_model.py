@@ -114,8 +114,22 @@ def main(argv: list[str] | None = None) -> int:
         outcome_learning_signals = _list_or_empty(
             repo.list_outcome_learning_signals, user_id=args.user_id
         )
+        # Mark which signals have been promoted: a repeated_pattern_summary
+        # belief_evidence row carrying the signal's independence_group exists.
+        promoted_by_group: dict[str, list[str]] = {}
+        for row in _list_or_empty(repo.list_all_evidence, user_id=args.user_id):
+            if row.source_type.value == "repeated_pattern_summary":
+                promoted_by_group.setdefault(row.independence_group, []).append(row.evidence_id)
     finally:
         repo.close()
+
+    signal_dicts = []
+    for signal in outcome_learning_signals:
+        payload = json.loads(signal.model_dump_json())
+        promoted_ids = sorted(promoted_by_group.get(signal.independence_group, []))
+        payload["promoted"] = bool(promoted_ids)
+        payload["promoted_evidence_ids"] = promoted_ids
+        signal_dicts.append(payload)
 
     output = {
         "events": [json.loads(event.model_dump_json()) for event in events],
@@ -128,9 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         "recommendation_outcomes": [
             json.loads(o.model_dump_json()) for o in recommendation_outcomes
         ],
-        "outcome_learning_signals": [
-            json.loads(s.model_dump_json()) for s in outcome_learning_signals
-        ],
+        "outcome_learning_signals": signal_dicts,
     }
     print(json.dumps(output, indent=2 if args.pretty else None))
     return 0

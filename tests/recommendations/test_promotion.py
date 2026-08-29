@@ -344,6 +344,28 @@ class PromoteCliTests(unittest.TestCase):
             repo.close()
         return signal
 
+    def test_missing_db_exits_nonzero_without_a_traceback(self) -> None:
+        with TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "does_not_exist.sqlite3")
+            result = _run_cli(["--db", missing, "--signal-id", "whatever"])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("no such database file", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_missing_db_is_not_created_in_dry_run(self) -> None:
+        with TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "typo.sqlite3"
+            result = _run_cli(["--db", str(missing), "--signal-id", "whatever"])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(missing.exists())
+
+    def test_missing_db_is_not_created_with_persist(self) -> None:
+        with TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "typo.sqlite3"
+            result = _run_cli(["--db", str(missing), "--signal-id", "whatever", "--persist"])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(missing.exists())
+
     def test_recompute_without_persist_is_rejected(self) -> None:
         with TemporaryDirectory() as tmp:
             db_path = str(Path(tmp) / "events.sqlite3")

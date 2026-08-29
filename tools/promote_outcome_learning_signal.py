@@ -90,6 +90,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Invalid --as-of {args.as_of!r}: {exc}", file=sys.stderr)
         return 1
 
+    # Reject a missing database before opening it, in every mode: a typoed
+    # --db must never silently create a new empty database (which
+    # ``Repository.at_path`` would do under --persist) or produce an opaque
+    # traceback (which ``readonly_at_path`` would raise for a dry run).
+    if not Path(args.db).is_file():
+        print(f"no such database file: {args.db!r}", file=sys.stderr)
+        return 1
+
     repo = Repository.at_path(args.db) if args.persist else Repository.readonly_at_path(args.db)
     try:
         try:

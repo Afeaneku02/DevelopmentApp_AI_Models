@@ -218,11 +218,20 @@ def recommendation_outcome_row(outcome: RecommendationOutcome) -> dict[str, Any]
     }
 
 
-def outcome_learning_signal_row(signal: OutcomeLearningSignal) -> dict[str, Any]:
+def outcome_learning_signal_row(
+    signal: OutcomeLearningSignal, *, promoted_evidence_ids: list[str] | None = None
+) -> dict[str, Any]:
     """One outcome-learning signal, projected onto the fields the viewer
     shows. ``proposed_evidence`` is summarised, not expanded: its count plus
     a compact ``belief_id:direction@strength`` list, so the section stays
-    readable while still showing what evidence was proposed."""
+    readable while still showing what evidence was proposed.
+
+    ``promoted_evidence_ids`` (the ``belief_evidence`` rows that were
+    authorized from this signal -- matched by its ``independence_group``)
+    is supplied by ``collect_view_model``; ``promoted`` is ``True`` when any
+    exist, so the viewer shows which signals have actually become evidence.
+    """
+    promoted_evidence_ids = sorted(promoted_evidence_ids or [])
     proposed = [
         {
             "belief_id": p.belief_id,
@@ -250,6 +259,8 @@ def outcome_learning_signal_row(signal: OutcomeLearningSignal) -> dict[str, Any]
         "rationale": signal.rationale,
         "proposed_evidence_count": len(proposed),
         "proposed_evidence": proposed,
+        "promoted": bool(promoted_evidence_ids),
+        "promoted_evidence_ids": promoted_evidence_ids,
     }
 
 
@@ -308,9 +319,12 @@ def summarize(view_model: ViewModel) -> dict[str, Any]:
 
     signals_by_kind: dict[str, int] = {}
     proposed_evidence_rows = 0
+    promoted_signals = 0
     for row in view_model.outcome_learning_signals:
         signals_by_kind[row["kind"]] = signals_by_kind.get(row["kind"], 0) + 1
         proposed_evidence_rows += row["proposed_evidence_count"]
+        if row["promoted"]:
+            promoted_signals += 1
 
     return {
         "events": len(view_model.events),
@@ -331,6 +345,7 @@ def summarize(view_model: ViewModel) -> dict[str, Any]:
         "outcome_learning_signals": len(view_model.outcome_learning_signals),
         "outcome_learning_signals_by_kind": signals_by_kind,
         "outcome_learning_proposed_evidence": proposed_evidence_rows,
+        "outcome_learning_signals_promoted": promoted_signals,
     }
 
 
@@ -385,6 +400,14 @@ def collect_view_model(
     outcome_learning_signals = _list_or_empty(
         repo.list_outcome_learning_signals, user_id=user_id
     )
+    # A signal is "promoted" once a repeated_pattern_summary belief_evidence
+    # row carrying its independence_group exists in the ledger (that is what
+    # promote_outcome_learning_signal writes). Match against the user's whole
+    # ledger, not the possibly belief-scoped ``evidence`` list above.
+    promoted_by_group: dict[str, list[str]] = {}
+    for row in _list_or_empty(repo.list_all_evidence, user_id=user_id):
+        if row.source_type.value == "repeated_pattern_summary":
+            promoted_by_group.setdefault(row.independence_group, []).append(row.evidence_id)
 
     return ViewModel(
         db_path=db_path,
@@ -405,7 +428,10 @@ def collect_view_model(
             recommendation_outcome_row(o) for o in recommendation_outcomes
         ],
         outcome_learning_signals=[
-            outcome_learning_signal_row(s) for s in outcome_learning_signals
+            outcome_learning_signal_row(
+                s, promoted_evidence_ids=promoted_by_group.get(s.independence_group, [])
+            )
+            for s in outcome_learning_signals
         ],
     )
 
@@ -498,6 +524,7 @@ def _summary_cards(summary: dict[str, Any]) -> str:
         ("outcomes", summary["recommendation_outcomes"]),
         ("learning signals", summary["outcome_learning_signals"]),
         ("proposed evidence", summary["outcome_learning_proposed_evidence"]),
+        ("promoted signals", summary["outcome_learning_signals_promoted"]),
     ]
     parts = [
         f'<div class="card"><div class="n">{int(n)}</div><div class="l">{html.escape(label)}</div></div>'
@@ -675,10 +702,15 @@ def _outcome_learning_signals_section(rows: list[dict[str, Any]]) -> str:
         )
         return f'{row["proposed_evidence_count"]} ({html.escape(compact)})'
 
+    def _promoted(row: dict[str, Any]) -> str:
+        if not row["promoted"]:
+            return _tag("no", "not_required")
+        return f'{_tag("promoted", "support")} {html.escape(", ".join(row["promoted_evidence_ids"]))}'
+
     table = _table(
         ["signal_id", "user_id", "context", "kind", "direction", "trials",
          "supp/adv/neut", "belief_ids", "recommendation_ids", "outcome_ids",
-         "causal_claim", "proposed_evidence", "created_at", "rationale"],
+         "causal_claim", "proposed_evidence", "promoted", "created_at", "rationale"],
         [
             [
                 _esc(r["signal_id"]), _esc(r["user_id"]), _esc(r["recommendation_context"]),
@@ -691,13 +723,14 @@ def _outcome_learning_signals_section(rows: list[dict[str, Any]]) -> str:
                 _esc(", ".join(r["outcome_ids"])),
                 _tag("causal!", "high") if r["causal_claim"] else _tag("none", "not_required"),
                 _proposed(r),
+                _promoted(r),
                 _esc(r["created_at"]),
                 _esc(r["rationale"]),
             ]
             for r in rows
         ],
         empty="No outcome-learning signals stored.",
-        wrap_columns={8, 9, 13},
+        wrap_columns={8, 9, 14},
     )
     return f"<h2>Outcome learning signals</h2>{table}"
 
