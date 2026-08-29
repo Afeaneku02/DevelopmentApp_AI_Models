@@ -69,6 +69,34 @@ _SUPPORTIVE_RESULT = {OutcomeResult.SUCCESSFUL, OutcomeResult.MIXED}
 _ADVERSE_FOLLOWED = {OutcomeFollowed.NOT_FOLLOWED, OutcomeFollowed.IGNORED}
 
 
+def classify_counts(
+    *, supportive: int, adverse: int, neutral: int, min_trials: int | None = None
+) -> OutcomeLearningSignalKind:
+    """The deterministic policy decision from a trial breakdown. Shared by
+    ``analyze_recommendation_outcomes`` (to produce a signal) and by
+    promotion (to re-check a stored signal still matches policy before its
+    proposals become real evidence)."""
+    threshold = OUTCOME_LEARNING_POLICY.min_trials if min_trials is None else min_trials
+    policy = OUTCOME_LEARNING_POLICY
+    if supportive >= threshold and supportive > adverse:
+        return OutcomeLearningSignalKind.SUPPORT
+    if adverse >= threshold and adverse > (supportive + neutral) * policy.contradiction_dominance:
+        return OutcomeLearningSignalKind.WEAK_CONTRADICTION
+    return OutcomeLearningSignalKind.NO_SIGNAL
+
+
+def strength_for_kind(kind: OutcomeLearningSignalKind, *, supportive: int, adverse: int) -> float:
+    """The conservative, capped strength for a signal of the given kind."""
+    policy = OUTCOME_LEARNING_POLICY
+    if kind is OutcomeLearningSignalKind.SUPPORT:
+        return round(min(policy.support_strength_cap, policy.support_strength_per_trial * supportive), 6)
+    if kind is OutcomeLearningSignalKind.WEAK_CONTRADICTION:
+        return round(
+            min(policy.contradiction_strength_cap, policy.contradiction_strength_per_trial * adverse), 6
+        )
+    return 0.0
+
+
 def _classify(outcome: RecommendationOutcome) -> str:
     """One outcome -> "supportive" | "adverse" | "neutral". Conservative: a
     followed-and-positive outcome is supportive; a not-followed or
@@ -122,7 +150,6 @@ def analyze_recommendation_outcomes(
     pattern yields nothing.
     """
     threshold = OUTCOME_LEARNING_POLICY.min_trials if min_trials is None else min_trials
-    policy = OUTCOME_LEARNING_POLICY
 
     outcomes_by_rec: dict[str, list[RecommendationOutcome]] = {}
     for outcome in outcomes:
@@ -175,29 +202,15 @@ def analyze_recommendation_outcomes(
             f"outcome-learning:{context}:" + "|".join(sorted(belief_ids))
         )
 
-        if supportive >= threshold and supportive > adverse:
-            kind = OutcomeLearningSignalKind.SUPPORT
-            direction = Direction.SUPPORT
-            strength = round(
-                min(policy.support_strength_cap, policy.support_strength_per_trial * supportive), 6
-            )
-        elif (
-            adverse >= threshold
-            and adverse > (supportive + neutral) * policy.contradiction_dominance
-        ):
-            kind = OutcomeLearningSignalKind.WEAK_CONTRADICTION
-            direction = Direction.CONTRADICT
-            strength = round(
-                min(
-                    policy.contradiction_strength_cap,
-                    policy.contradiction_strength_per_trial * adverse,
-                ),
-                6,
-            )
-        else:
-            kind = OutcomeLearningSignalKind.NO_SIGNAL
-            direction = None
-            strength = 0.0
+        kind = classify_counts(
+            supportive=supportive, adverse=adverse, neutral=neutral, min_trials=threshold
+        )
+        strength = strength_for_kind(kind, supportive=supportive, adverse=adverse)
+        direction = {
+            OutcomeLearningSignalKind.SUPPORT: Direction.SUPPORT,
+            OutcomeLearningSignalKind.WEAK_CONTRADICTION: Direction.CONTRADICT,
+            OutcomeLearningSignalKind.NO_SIGNAL: None,
+        }[kind]
 
         proposals: list[BeliefEvidenceProposal] = []
         observed_at = max(outcome.created_at for outcome in group_outcomes)

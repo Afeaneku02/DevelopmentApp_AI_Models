@@ -92,8 +92,25 @@ only once enough repeated trials exist, proposes weak `repeated_pattern_summary`
 belief-evidence for or against the beliefs the recommendation used. It makes
 no causal claim, never mutates a belief, and never recomputes; without
 `--persist` the database is opened read-only. The proposals are stored in
-`outcome_learning_signals` -- promoting one into the real belief-evidence
-ledger is a separate, later, backend-authorized step.
+`outcome_learning_signals` -- learning never promotes them itself.
+
+Promote one signal's proposals into the real belief-evidence ledger (a
+manual, one-signal, gated step):
+
+```bash
+python tools/promote_outcome_learning_signal.py --db canonical.sqlite3 --signal-id ols-...            # dry run
+python tools/promote_outcome_learning_signal.py --db canonical.sqlite3 --signal-id ols-... --persist
+python tools/promote_outcome_learning_signal.py --db canonical.sqlite3 --signal-id ols-... --persist --recompute
+```
+
+The deterministic gate requires `causal_claim=false`, a
+`support`/`weak_contradiction` kind, existing proposals, and a trial
+breakdown that still matches policy. Each proposal is re-provenanced to the
+belief's current leaf events and authorized via `authorize_evidence` with
+the signal's `independence_group`, so re-running promotion for the same
+signal cannot add a second row. Nothing is written without `--persist`;
+without `--recompute` the affected beliefs are left
+`locked_until_recompute`.
 
 Inspect a stored user model:
 
@@ -149,6 +166,9 @@ seed and use a throwaway demo database.
   into conservative `repeated_pattern_summary` belief-evidence proposals.
   Prints by default; `--persist` appends analysis signals. No causal claim,
   no belief mutation, no recompute.
+- `tools/promote_outcome_learning_signal.py`: promote one outcome-learning
+  signal's proposals into real belief_evidence after deterministic checks.
+  Dry run unless `--persist`; locks affected beliefs unless `--recompute`.
 - `tools/run_manifest.py`: run a JSON manifest through the existing tools.
 
 ## Manifest References
@@ -199,13 +219,12 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
   product workflow.
 - The canonical belief-key registry is intentionally small and exact-match
   only.
-- Outcome learning stops at conservative `belief_evidence` proposals in
-  `outcome_learning_signals`; it does not yet authorize them into the ledger
-  or recompute beliefs.
+- Outcome-learning promotion is manual and one signal at a time
+  (`tools/promote_outcome_learning_signal.py`); there is no scheduler or
+  batch reviewer that promotes signals automatically.
 
 ## Good Next Step
 
-Add the backend authorization step that reviews `outcome_learning_signals`
-proposals and, for the ones that clear policy, authorizes them into the
-`belief_evidence` ledger (with proper leaf-event provenance and
-`repeated_pattern_summary` overlap suppression) and triggers a recompute.
+Add a review/queue workflow around `promote_outcome_learning_signal`: surface
+the promotable signals, let a reviewer approve or reject each, and record the
+decision -- rather than promoting them one CLI call at a time.

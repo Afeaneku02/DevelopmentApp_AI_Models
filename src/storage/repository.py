@@ -456,6 +456,21 @@ class Repository:
             self._lock_latest_belief(user_id=user_id, belief_id=belief_id)
         return newly_suppressed
 
+    def lock_belief_until_recompute(self, *, user_id: str, belief_id: str) -> bool:
+        """Public fail-closed lock for a belief whose active evidence just
+        changed through a path other than invalidation/suppression -- e.g.
+        outcome-learning promotion adding a new ``belief_evidence`` row
+        (blueprint section 6.0.2: a belief with changed evidence must not
+        keep serving its cached confidence/status until a successful
+        recompute). Appends a ``locked_until_recompute=True`` copy via
+        ``_lock_latest_belief`` and returns whether a lock copy was written
+        (``False`` if there is no saved belief yet, or it is already locked).
+        """
+        before = self.get_latest_belief(user_id=user_id, belief_id=belief_id)
+        will_lock = before is not None and not before.locked_until_recompute
+        self._lock_latest_belief(user_id=user_id, belief_id=belief_id)
+        return will_lock
+
     def _lock_latest_belief(self, *, user_id: str, belief_id: str) -> None:
         """If a belief has been saved for this scope and is not already
         locked, appends a copy of it with ``locked_until_recompute=True`` --
