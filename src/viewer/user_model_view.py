@@ -97,6 +97,15 @@ def observation_row(
     }
 
 
+def observation_event_row(link: ObservationEvent) -> dict[str, Any]:
+    return {
+        "observation_id": link.observation_id,
+        "event_id": link.event_id,
+        "link_role": link.link_role.value,
+        "created_at": _fmt(link.created_at),
+    }
+
+
 def evidence_row(evidence: BeliefEvidence) -> dict[str, Any]:
     return {
         "evidence_id": evidence.evidence_id,
@@ -165,6 +174,7 @@ class ViewModel:
     belief_id: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     observations: list[dict[str, Any]] = field(default_factory=list)
+    observation_events: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
     beliefs: list[dict[str, Any]] = field(default_factory=list)
     canonicalizations: list[dict[str, Any]] = field(default_factory=list)
@@ -194,6 +204,7 @@ def summarize(view_model: ViewModel) -> dict[str, Any]:
     return {
         "events": len(view_model.events),
         "observations": len(view_model.observations),
+        "observation_events": len(view_model.observation_events),
         "evidence": len(view_model.evidence),
         "evidence_by_state": evidence_by_state,
         "beliefs": len(view_model.beliefs),
@@ -224,6 +235,7 @@ def collect_view_model(
     links_by_observation: dict[str, list[ObservationEvent]] = {}
     for link in links:
         links_by_observation.setdefault(link.observation_id, []).append(link)
+    ordered_links = sorted(links, key=lambda link: (link.observation_id, link.event_id))
 
     evidence = repo.list_all_evidence(user_id=user_id, belief_id=belief_id)
     beliefs = repo.list_latest_beliefs(user_id=user_id, belief_id=belief_id)
@@ -239,6 +251,7 @@ def collect_view_model(
             observation_row(o, links_by_observation.get(o.observation_id, []))
             for o in observations
         ],
+        observation_events=[observation_event_row(link) for link in ordered_links],
         evidence=[evidence_row(e) for e in evidence],
         beliefs=[belief_row(b) for b in beliefs],
         canonicalizations=[canonicalization_row(c) for c in canonicalizations],
@@ -313,6 +326,7 @@ def _summary_cards(summary: dict[str, Any]) -> str:
     cards = [
         ("events", summary["events"]),
         ("observations", summary["observations"]),
+        ("obs-event links", summary["observation_events"]),
         ("evidence", summary["evidence"]),
         ("beliefs", summary["beliefs"]),
         ("locked beliefs", summary["locked_beliefs"]),
@@ -364,6 +378,18 @@ def _observations_section(rows: list[dict[str, Any]]) -> str:
         wrap_columns={7},
     )
     return f"<h2>Observations</h2>{table}"
+
+
+def _observation_events_section(rows: list[dict[str, Any]]) -> str:
+    table = _table(
+        ["observation_id", "event_id", "link_role", "created_at"],
+        [
+            [_esc(r["observation_id"]), _esc(r["event_id"]), _esc(r["link_role"]), _esc(r["created_at"])]
+            for r in rows
+        ],
+        empty="No observation-event links stored.",
+    )
+    return f"<h2>Observation-event links</h2>{table}"
 
 
 def _evidence_section(rows: list[dict[str, Any]]) -> str:
@@ -456,6 +482,7 @@ def render_html(view_model: ViewModel) -> str:
 {_summary_cards(summary)}
 {_events_section(view_model.events)}
 {_observations_section(view_model.observations)}
+{_observation_events_section(view_model.observation_events)}
 {_evidence_section(view_model.evidence)}
 {_beliefs_section(view_model.beliefs)}
 {_canonicalizations_section(view_model.canonicalizations)}

@@ -29,6 +29,7 @@ from src.viewer.user_model_view import (
     collect_view_model,
     evidence_row,
     evidence_state,
+    observation_event_row,
     render_html,
     summarize,
 )
@@ -136,6 +137,14 @@ class RowProjectionTests(unittest.TestCase):
         self.assertEqual(row["proposed_key"], "prefers_evening_exercise_sessions")
         self.assertEqual(row["canonical_key"], "higher_adherence_after_work")
         self.assertEqual(row["decision"], "alias")
+        self.assertIn("registry", row["decision_reason"])
+
+    def test_observation_event_row_projects_the_link(self) -> None:
+        _, observation, links, _ = _make_evidence("bev_1", "evt_1")
+        row = observation_event_row(links[0])
+        self.assertEqual(row["observation_id"], observation.observation_id)
+        self.assertEqual(row["event_id"], "evt_1")
+        self.assertEqual(row["link_role"], links[0].link_role.value)
 
 
 class SummarizeTests(unittest.TestCase):
@@ -149,6 +158,7 @@ class SummarizeTests(unittest.TestCase):
 
         self.assertEqual(summary["events"], 2)
         self.assertEqual(summary["observations"], 3)
+        self.assertEqual(summary["observation_events"], 3)
         self.assertEqual(summary["evidence"], 3)
         self.assertEqual(summary["evidence_by_state"][EVIDENCE_STATE_ACTIVE], 1)
         self.assertEqual(summary["evidence_by_state"][EVIDENCE_STATE_INACTIVE], 1)
@@ -180,6 +190,10 @@ class CollectViewModelTests(unittest.TestCase):
         finally:
             repo.close()
         self.assertEqual(view_model.observations[0]["linked_event_ids"], ["evt_1"])
+        self.assertEqual(
+            [(l["observation_id"], l["event_id"]) for l in view_model.observation_events],
+            [(observation.observation_id, "evt_1")],
+        )
 
 
 class RenderHtmlTests(unittest.TestCase):
@@ -212,9 +226,13 @@ class RenderHtmlTests(unittest.TestCase):
         finally:
             repo.close()
         page = render_html(view_model)
-        for heading in ("Events", "Observations", "Evidence", "Beliefs", "Belief-key canonicalization"):
+        for heading in (
+            "Events", "Observations", "Observation-event links", "Evidence", "Beliefs",
+            "Belief-key canonicalization",
+        ):
             self.assertIn(heading, page)
         self.assertIn("No events stored.", page)
+        self.assertIn("No observation-event links stored.", page)
 
 
 def _seeded_repo() -> Repository:

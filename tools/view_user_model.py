@@ -2,9 +2,9 @@
 """Read-only local/dev viewer for the adaptive user model.
 
 Renders whatever is stored in a ``Repository`` SQLite database as one
-self-contained HTML page -- events, observations, evidence, beliefs, and
-belief-key canonicalization decisions -- so a demo user model can be
-eyeballed instead of read as raw JSON.
+self-contained HTML page -- events, observations, observation-event links,
+evidence, beliefs, and belief-key canonicalization decisions -- so a demo
+user model can be eyeballed instead of read as raw JSON.
 
 Strictly read-only, in three independent ways:
 
@@ -153,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Wrote {out_path} "
         f"({summary['events']} events, {summary['observations']} observations, "
+        f"{summary['observation_events']} obs-event links, "
         f"{summary['evidence']} evidence, {summary['beliefs']} beliefs, "
         f"{summary['canonicalizations']} canonicalization decisions)."
     )
