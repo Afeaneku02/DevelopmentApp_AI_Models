@@ -150,7 +150,10 @@ Each review is appended to `outcome_learning_signal_reviews` with its
 `rejected` review promotes nothing. An `approved` review promotes only when
 `--promote` is passed (and recomputes only with `--recompute`), delegating to
 the same gated `promote_outcome_learning_signal` and recording exactly what it
-did on the review. A signal that already has an approved review is not
+did on the review. The promotion and the review's own audit row are written in
+one atomic transaction, so an approved review can never leave promoted evidence
+or a recomputed belief behind without a stored review to explain it. A signal
+that already has an approved review is not
 re-approved unless `--allow-duplicate` is given, and then both reviews stay in
 the trail. The `--decision` and `--reviewer-id` always come from these flags,
 never from model output -- `OutcomeLearningSignalReviewProposal` (the only

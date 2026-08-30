@@ -43,8 +43,10 @@ recommendation-engine tables, no deletion-cascade execution. One
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
 from src.beliefs.models import (
     BeliefEvidence,
@@ -171,9 +173,54 @@ class Repository:
 
     def __init__(self, connection: sqlite3.Connection, *, run_schema: bool = True) -> None:
         self._conn = connection
+        self._tx_depth = 0
         if run_schema:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
+
+    @contextmanager
+    def transaction(self) -> "Iterator[None]":
+        """Run several writes as one atomic SQLite transaction: either every
+        write inside the block commits together, or -- on any exception --
+        none of them do.
+
+        Reentrant. A nested ``transaction()`` (or any internal ``_write()``
+        block) joins the outermost transaction instead of committing early,
+        so a failure anywhere in the block rolls the whole thing back rather
+        than leaving a half-applied change behind.
+
+        ``review_outcome_learning_signal`` runs an approved review's
+        promotion and the review's own audit row inside one of these, so a
+        failure writing the audit row cannot leave promoted
+        ``belief_evidence`` / recomputed beliefs behind, and a failure
+        during promotion cannot leave a stored review claiming a promotion
+        that did not happen.
+        """
+        if self._tx_depth > 0:
+            self._tx_depth += 1
+            try:
+                yield
+            finally:
+                self._tx_depth -= 1
+            return
+        self._tx_depth = 1
+        try:
+            with self._conn:
+                yield
+        finally:
+            self._tx_depth = 0
+
+    @contextmanager
+    def _write(self) -> "Iterator[None]":
+        """One write's transaction scope -- ``with self._conn:`` normally,
+        but a no-op when a ``transaction()`` block is already open so the
+        write joins that outer transaction instead of committing on its
+        own."""
+        if self._tx_depth > 0:
+            yield
+        else:
+            with self._conn:
+                yield
 
     @classmethod
     def in_memory(cls) -> "Repository":
@@ -347,7 +394,7 @@ class Repository:
         if errors:
             raise ValueError(f"cannot insert evidence {validated.evidence_id!r}: " + "; ".join(errors))
 
-        with self._conn:
+        with self._write():
             self._conn.execute(
                 "INSERT INTO belief_evidence (evidence_id, user_id, belief_id, data) VALUES (?, ?, ?, ?)",
                 (validated.evidence_id, validated.user_id, validated.belief_id, validated.model_dump_json()),
@@ -514,7 +561,7 @@ class Repository:
         (``get_latest_belief()``) is an explicit query rather than
         something a concurrent writer could silently clobber."""
         validated = UserBelief.model_validate(belief.model_dump())
-        with self._conn:
+        with self._write():
             self._conn.execute(
                 "INSERT INTO user_beliefs (belief_id, user_id, data) VALUES (?, ?, ?)",
                 (validated.belief_id, validated.user_id, validated.model_dump_json()),
@@ -825,7 +872,7 @@ class Repository:
                 f"cannot insert review {validated.review_id!r}: no outcome-learning signal "
                 f"{validated.signal_id!r} is stored"
             )
-        with self._conn:
+        with self._write():
             self._conn.execute(
                 "INSERT INTO outcome_learning_signal_reviews "
                 "(review_id, signal_id, decision, data) VALUES (?, ?, ?, ?)",

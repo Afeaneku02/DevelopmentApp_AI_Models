@@ -9,6 +9,13 @@ re-implements promotion. A ``rejected`` review promotes nothing. The result
 of any promotion is written back onto the stored review so the whole action
 is replayable from the audit trail.
 
+Promotion and the review's own audit row are written inside a single
+``repo.transaction()``: the promoted ``belief_evidence`` rows and any
+recomputed beliefs commit only if the review row commits with them. If
+storing the review fails, the promotion is rolled back, so an approved
+review can never leave changed belief state behind with no audit record to
+explain it.
+
 Duplicate protection: a second ``approved`` review for a signal that already
 has one is refused unless ``allow_duplicate=True``; when allowed, the new
 review is still stored (and the audit trail shows both, each with its own
@@ -103,33 +110,44 @@ def review_outcome_learning_signal(
 
     notes = notes if notes is not None else (proposal.suggested_notes if proposal is not None else None)
 
+    # Promotion (which writes belief_evidence and may recompute beliefs) and
+    # the review's own audit row are written inside one atomic transaction:
+    # if the audit insert fails, the promotion it would have recorded is
+    # rolled back too, so an approved review can never leave promoted
+    # evidence or recomputed beliefs behind without a stored review to
+    # explain them. ``repo.transaction()`` is reentrant, so
+    # ``promote_outcome_learning_signal``'s own writes join this transaction
+    # rather than committing early.
     promotion: PromotionResult | None = None
-    promoted_evidence_ids: list[str] = []
-    recomputed_belief_ids: list[str] = []
-    if decision is OutcomeLearningReviewDecision.APPROVED and promote:
-        promotion = promote_outcome_learning_signal(
-            repo, signal_id=signal_id, as_of=as_of, persist=True, recompute=recompute
-        )
-        promoted_evidence_ids = list(promotion.inserted_evidence_ids)
-        recomputed_belief_ids = [belief["belief_id"] for belief in promotion.recomputed_beliefs]
-        if not promotion.authorized and promotion.rejected_reason:
-            gate_note = f"promotion gate rejected: {promotion.rejected_reason}"
-            notes = f"{notes}; {gate_note}" if notes else gate_note
+    with repo.transaction():
+        promoted_evidence_ids: list[str] = []
+        recomputed_belief_ids: list[str] = []
+        review_notes = notes
+        if decision is OutcomeLearningReviewDecision.APPROVED and promote:
+            promotion = promote_outcome_learning_signal(
+                repo, signal_id=signal_id, as_of=as_of, persist=True, recompute=recompute
+            )
+            promoted_evidence_ids = list(promotion.inserted_evidence_ids)
+            recomputed_belief_ids = [belief["belief_id"] for belief in promotion.recomputed_beliefs]
+            if not promotion.authorized and promotion.rejected_reason:
+                gate_note = f"promotion gate rejected: {promotion.rejected_reason}"
+                review_notes = f"{review_notes}; {gate_note}" if review_notes else gate_note
 
-    review = OutcomeLearningSignalReview(
-        review_id=review_id,
-        signal_id=signal_id,
-        reviewer_id=reviewer_id,
-        decision=decision,
-        notes=notes,
-        promotion_requested=promote and decision is OutcomeLearningReviewDecision.APPROVED,
-        recompute_requested=recompute and decision is OutcomeLearningReviewDecision.APPROVED,
-        promoted_evidence_ids=promoted_evidence_ids,
-        recomputed_belief_ids=recomputed_belief_ids,
-        created_at=as_of,
-        **_VERSION_FIELDS,
-    )
-    repo.insert_outcome_learning_signal_review(review)
+        review = OutcomeLearningSignalReview(
+            review_id=review_id,
+            signal_id=signal_id,
+            reviewer_id=reviewer_id,
+            decision=decision,
+            notes=review_notes,
+            promotion_requested=promote and decision is OutcomeLearningReviewDecision.APPROVED,
+            recompute_requested=recompute and decision is OutcomeLearningReviewDecision.APPROVED,
+            promoted_evidence_ids=promoted_evidence_ids,
+            recomputed_belief_ids=recomputed_belief_ids,
+            created_at=as_of,
+            **_VERSION_FIELDS,
+        )
+        repo.insert_outcome_learning_signal_review(review)
+
     return ReviewOutcome(review=review, stored=True, blocked_reason=None, promotion=promotion)
 
 

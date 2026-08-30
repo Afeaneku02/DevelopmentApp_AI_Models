@@ -11,6 +11,10 @@ Proves the seven guarantees the task requires:
    versioned as a second, separately-identified review);
 6. the viewer and inspector show each signal's review decision / status;
 7. an LLM cannot set reviewer-only fields through any proposal object.
+
+Plus atomicity: if the review's audit row fails to store, the promotion it
+would have recorded (evidence + recompute) is rolled back, so changed belief
+state is never left without a review to explain it.
 """
 from __future__ import annotations
 
@@ -412,6 +416,108 @@ class ReviewCliTests(unittest.TestCase):
             finally:
                 repo.close()
             self.assertEqual([r.review_id for r in trail], ["rev_1", "rev_3"])
+
+
+class ReviewPromotionAtomicityTests(unittest.TestCase):
+    def test_audit_write_failure_rolls_back_the_promotion(self) -> None:
+        repo = Repository.in_memory()
+        try:
+            baseline, signal = _seed_model(repo)
+
+            # Simulate the audit-row insert failing *after* promotion has
+            # written evidence and recomputed the belief inside the same
+            # transaction.
+            def boom(_review: object) -> None:
+                raise RuntimeError("simulated audit-row write failure")
+
+            repo.insert_outcome_learning_signal_review = boom  # type: ignore[method-assign]
+
+            with self.assertRaises(RuntimeError):
+                review_outcome_learning_signal(
+                    repo, review_id="rev_1", signal_id=signal.signal_id, reviewer_id="alice",
+                    decision="approved", as_of=PROMOTED_AT, promote=True, recompute=True,
+                )
+        finally:
+            try:
+                del repo.__dict__["insert_outcome_learning_signal_review"]
+            except KeyError:
+                pass
+            # nothing promoted, nothing recomputed, nothing locked, nothing audited
+            rps = _rps_rows(repo, user_id="usr_1", belief_id="bel_1")
+            latest = repo.get_latest_belief(user_id="usr_1", belief_id="bel_1")
+            reviews = repo.list_outcome_learning_signal_reviews()
+            all_evidence = repo.list_evidence(user_id="usr_1", belief_id="bel_1")
+            repo.close()
+
+        self.assertEqual(rps, [], "promoted evidence was left behind after the audit write failed")
+        self.assertEqual(len(all_evidence), 1, "only the original leaf evidence should remain")
+        self.assertEqual(reviews, [], "no review row should exist")
+        self.assertFalse(latest.locked_until_recompute, "belief must not be left locked")
+        self.assertEqual(
+            latest.confidence, baseline.confidence,
+            "belief confidence must be unchanged (recompute rolled back)",
+        )
+
+    def test_audit_write_failure_without_promote_leaves_nothing(self) -> None:
+        repo = Repository.in_memory()
+        try:
+            _, signal = _seed_model(repo)
+
+            def boom(_review: object) -> None:
+                raise RuntimeError("simulated audit-row write failure")
+
+            repo.insert_outcome_learning_signal_review = boom  # type: ignore[method-assign]
+            with self.assertRaises(RuntimeError):
+                review_outcome_learning_signal(
+                    repo, review_id="rev_1", signal_id=signal.signal_id, reviewer_id="alice",
+                    decision="approved", as_of=REVIEWED_AT,
+                )
+        finally:
+            try:
+                del repo.__dict__["insert_outcome_learning_signal_review"]
+            except KeyError:
+                pass
+            reviews = repo.list_outcome_learning_signal_reviews()
+            repo.close()
+        self.assertEqual(reviews, [])
+
+    def test_successful_review_still_commits_everything(self) -> None:
+        # the transaction wrapper must not break the happy path
+        repo = Repository.in_memory()
+        try:
+            baseline, signal = _seed_model(repo)
+            outcome = review_outcome_learning_signal(
+                repo, review_id="rev_1", signal_id=signal.signal_id, reviewer_id="alice",
+                decision="approved", as_of=PROMOTED_AT, promote=True, recompute=True,
+            )
+            self.assertTrue(outcome.stored)
+            self.assertEqual(len(_rps_rows(repo, user_id="usr_1", belief_id="bel_1")), 1)
+            latest = repo.get_latest_belief(user_id="usr_1", belief_id="bel_1")
+            self.assertFalse(latest.locked_until_recompute)
+            self.assertGreater(latest.confidence, baseline.confidence)
+            self.assertEqual(
+                [r.review_id for r in repo.list_outcome_learning_signal_reviews()], ["rev_1"]
+            )
+        finally:
+            repo.close()
+
+    def test_transaction_is_reentrant(self) -> None:
+        repo = Repository.in_memory()
+        try:
+            _, signal = _seed_model(repo)
+            with repo.transaction():
+                with repo.transaction():
+                    outcome = review_outcome_learning_signal(
+                        repo, review_id="rev_1", signal_id=signal.signal_id, reviewer_id="alice",
+                        decision="approved", as_of=PROMOTED_AT, promote=True,
+                    )
+                self.assertTrue(outcome.stored)
+            self.assertEqual(
+                [r.review_id for r in repo.list_outcome_learning_signal_reviews()], ["rev_1"]
+            )
+            self.assertEqual(len(_rps_rows(repo, user_id="usr_1", belief_id="bel_1")), 1)
+        finally:
+            repo.close()
 
 
 class LlmCannotSetReviewerFieldsTests(unittest.TestCase):
