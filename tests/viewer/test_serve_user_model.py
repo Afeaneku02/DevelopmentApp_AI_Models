@@ -9,6 +9,7 @@ that the optional query params scope the page.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 import unittest
@@ -21,7 +22,19 @@ from tempfile import TemporaryDirectory
 
 from src.events.models import UserEvent
 from src.storage.repository import Repository
-from tools.serve_user_model import render_page, serve
+from tools.serve_user_model import render_evals_page, render_page, serve
+
+_QUICK_SCENARIO = {
+    "name": "quick_smoke",
+    "description": "trivial supporting-evidence scenario for fast route tests",
+    "steps": [
+        {"op": "evidence", "id": "s1", "belief": "b", "direction": "support", "strength": 0.9,
+         "source_type": "recorded_event", "days_before_as_of": 10},
+        {"op": "recompute", "belief": "b", "belief_key": "higher_adherence_after_work",
+         "belief_value": True},
+    ],
+    "expect": [{"check": "belief_confidence", "belief": "b", "gt": 0.0}],
+}
 
 VERSION_FIELDS = dict(
     schema_version="6", scoring_version="belief-score-0.6",
@@ -47,8 +60,8 @@ def _seed_db(path: str, users: dict[str, str]) -> None:
 
 
 @contextmanager
-def _running_server(db_path: str):
-    httpd = serve(db_path, host="127.0.0.1", port=0)
+def _running_server(db_path: str, *, evals_dir: str | None = None):
+    httpd = serve(db_path, host="127.0.0.1", port=0, evals_dir=evals_dir)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     host, port = httpd.server_address[0], httpd.server_address[1]
@@ -183,6 +196,91 @@ class QueryParamScopingTests(unittest.TestCase):
             with _running_server(db_path) as base:
                 status, _ = _get(base + "/?belief_id=bel_1")
         self.assertEqual(status, 200)
+
+
+class EvalsRouteTests(unittest.TestCase):
+    def _evals_dir(self, tmp: str, scenarios: dict[str, dict]) -> str:
+        d = Path(tmp) / "evals"
+        d.mkdir()
+        for name, manifest in scenarios.items():
+            (d / f"{name}.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return str(d)
+
+    def test_render_evals_page_returns_html_without_touching_a_database(self) -> None:
+        with TemporaryDirectory() as tmp:
+            evals_dir = self._evals_dir(tmp, {"quick": _QUICK_SCENARIO})
+            status, content_type, body = render_evals_page(evals_dir)
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", content_type)
+        self.assertIn("evaluation scorecard", body.lower())
+        self.assertIn("quick_smoke", body)
+        self.assertIn("ALL PASS", body)
+
+    def test_evals_route_is_served_and_does_not_modify_the_database(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_db(db_path, {"evt_1": "usr_1"})
+            before = Path(db_path).read_bytes()
+            evals_dir = self._evals_dir(tmp, {"quick": _QUICK_SCENARIO})
+
+            with _running_server(db_path, evals_dir=evals_dir) as base:
+                status, body = _get(base + "/evals")
+                # the normal viewer is still there and unchanged
+                root_status, root_body = _get(base + "/")
+
+            self.assertEqual(status, 200)
+            self.assertIn("quick_smoke", body)
+            self.assertIn("scenarios passed", body)
+            self.assertEqual(root_status, 200)
+            self.assertIn("READ-ONLY", root_body)
+            self.assertNotIn("quick_smoke", root_body)
+            self.assertEqual(Path(db_path).read_bytes(), before)
+
+    def test_evals_route_survives_a_missing_manifest_directory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_db(db_path, {"evt_1": "usr_1"})
+            missing = str(Path(tmp) / "no_such_evals_dir")
+
+            with _running_server(db_path, evals_dir=missing) as base:
+                status, body = _get(base + "/evals")
+                # server still responsive afterwards
+                again, _ = _get(base + "/evals")
+
+        self.assertEqual(status, 200)
+        self.assertIn("No evaluation manifests were found", body)
+        self.assertEqual(again, 200)
+
+    def test_evals_route_survives_a_broken_manifest(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_db(db_path, {"evt_1": "usr_1"})
+            evals_dir = Path(tmp) / "evals"
+            evals_dir.mkdir()
+            (evals_dir / "broken.json").write_text("{ not valid json", encoding="utf-8")
+            (evals_dir / "bad_step.json").write_text(
+                json.dumps({"name": "bad", "steps": [{"op": "nope"}],
+                            "expect": [{"check": "signal_exists", "context": "x"}]}),
+                encoding="utf-8",
+            )
+
+            with _running_server(db_path, evals_dir=str(evals_dir)) as base:
+                status, body = _get(base + "/evals")
+                again, _ = _get(base + "/")
+
+        self.assertEqual(status, 200)
+        self.assertIn("FAIL", body)
+        self.assertIn("could not load manifest", body)
+        self.assertIn("could not run this scenario", body)
+        self.assertEqual(again, 200)
+
+    def test_post_to_evals_is_rejected_with_405(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_db(db_path, {"evt_1": "usr_1"})
+            with _running_server(db_path) as base:
+                status, _ = _request(base + "/evals", method="POST", data=b"{}")
+        self.assertEqual(status, 405)
 
 
 if __name__ == "__main__":

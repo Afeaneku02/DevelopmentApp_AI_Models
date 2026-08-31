@@ -30,6 +30,15 @@ Optional query parameters on ``/``: ``?user_id=usr_17`` and
 ``?belief_id=bel_1`` scope the page exactly like the CLI's ``--user-id`` /
 ``--belief-id`` flags.
 
+``/evals`` renders a read-only evaluation scorecard: the existing harness
+(``src/evals/harness.py``) is run over the shipped scenario manifests
+(``examples/evals/*.json``) -- each scenario in its own fresh in-memory
+database -- and the page shows summary counts, every scenario's pass/fail,
+and every check. This route never opens or touches the served database, and
+a missing or broken manifest is shown as a failed scenario rather than
+crashing the server. Pass ``--evals-dir`` to point at a different manifest
+directory.
+
 Stdlib only (``http.server``); the repo has no web framework.
 """
 from __future__ import annotations
@@ -45,6 +54,11 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.storage.repository import Repository  # noqa: E402
+from src.viewer.evals_view import (  # noqa: E402
+    DEFAULT_MANIFEST_DIR,
+    collect_eval_report,
+    render_evals_html,
+)
 from src.viewer.user_model_view import collect_view_model, render_html  # noqa: E402
 from tools.view_user_model import _seed_demo_database  # noqa: E402  (shared demo-seed helper)
 
@@ -66,6 +80,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Interface to bind (default: 127.0.0.1).")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind (default: 8000).")
+    parser.add_argument(
+        "--evals-dir", default=None, dest="evals_dir",
+        help=(
+            "Directory of scenario manifests for the /evals scorecard "
+            f"(default: {DEFAULT_MANIFEST_DIR})."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -98,13 +119,34 @@ def render_page(
     return 200, "text/html; charset=utf-8", render_html(view_model)
 
 
-def build_handler(db_path: str) -> type[BaseHTTPRequestHandler]:
+def render_evals_page(manifest_dir: str | Path | None = None) -> tuple[int, str, str]:
+    """Run the evaluation harness over ``manifest_dir`` and render the
+    scorecard page.
+
+    Returns ``(status_code, content_type, body)``. Always ``200`` with an
+    HTML body: a missing manifest directory renders an empty-state page and a
+    broken manifest renders as a failed scenario -- neither raises, so the
+    server stays up. This never opens the served database; every scenario
+    runs in its own fresh in-memory ``Repository``.
+    """
+    report, resolved_dir = collect_eval_report(manifest_dir)
+    body = render_evals_html(
+        report, manifest_dir=resolved_dir, generated_at=datetime.now(timezone.utc)
+    )
+    return 200, "text/html; charset=utf-8", body
+
+
+def build_handler(
+    db_path: str, *, evals_dir: str | Path | None = None
+) -> type[BaseHTTPRequestHandler]:
     """A ``BaseHTTPRequestHandler`` subclass bound to one database path.
 
     Serves the viewer at ``/`` (honouring ``?user_id=`` / ``?belief_id=``),
-    returns 204 for ``/favicon.ico``, 404 for anything else, and 405 for any
-    method other than GET/HEAD. There is no route that writes.
+    the evaluation scorecard at ``/evals``, returns 204 for
+    ``/favicon.ico``, 404 for anything else, and 405 for any method other
+    than GET/HEAD. There is no route that writes.
     """
+    resolved_evals_dir = Path(evals_dir) if evals_dir is not None else DEFAULT_MANIFEST_DIR
 
     class UserModelViewerHandler(BaseHTTPRequestHandler):
         server_version = "UserModelViewer/1.0"
@@ -136,6 +178,11 @@ def build_handler(db_path: str) -> type[BaseHTTPRequestHandler]:
             if route == "/favicon.ico":
                 self.send_response(204)
                 self.end_headers()
+                return
+
+            if route == "/evals":
+                status, content_type, body = render_evals_page(resolved_evals_dir)
+                self._write(status, content_type, body, include_body=include_body)
                 return
 
             if route != "/":
@@ -182,10 +229,12 @@ class _ViewerHTTPServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
-def serve(db_path: str, *, host: str, port: int) -> ThreadingHTTPServer:
+def serve(
+    db_path: str, *, host: str, port: int, evals_dir: str | Path | None = None
+) -> ThreadingHTTPServer:
     """Build (but do not block on) a server for ``db_path``. The caller runs
     ``serve_forever()``; tests bind port 0 and drive it from a thread."""
-    handler = build_handler(db_path)
+    handler = build_handler(db_path, evals_dir=evals_dir)
     return _ViewerHTTPServer((host, port), handler)
 
 
@@ -211,9 +260,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"no such database file: {db_path!r}", file=sys.stderr)
             return 1
 
-    httpd = serve(db_path, host=args.host, port=args.port)
+    httpd = serve(db_path, host=args.host, port=args.port, evals_dir=args.evals_dir)
     host, port = httpd.server_address[0], httpd.server_address[1]
     print(f"Serving read-only user model viewer for {db_path!r} at http://{host}:{port}/  (Ctrl+C to stop)")
+    print(f"  evaluation scorecard: http://{host}:{port}/evals", file=sys.stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

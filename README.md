@@ -185,6 +185,14 @@ server re-reads the database on every request and accepts optional
 `?user_id=` / `?belief_id=` query parameters. Pass `--demo` to either tool to
 seed and use a throwaway demo database.
 
+`tools/serve_user_model.py` also serves a read-only evaluation scorecard at
+`/evals`: it runs the harness over `examples/evals/*.json` (each scenario in
+its own fresh in-memory database -- the served database is never touched) and
+shows summary counts, every scenario's pass/fail, and every check. A missing
+or broken manifest renders as a failed scenario instead of crashing the
+server. Point it elsewhere with `--evals-dir`. The normal viewer at `/` is
+unchanged.
+
 Run the evaluation harness:
 
 ```bash
@@ -229,7 +237,8 @@ weak-only outcome-learning proposals, and review approval vs. rejection.
 - `tools/view_user_model.py`: render the stored model state as one read-only
   HTML page.
 - `tools/serve_user_model.py`: serve that page locally (stdlib `http.server`),
-  re-reading the database on every request. Read-only; GET/HEAD only.
+  re-reading the database on every request. Read-only; GET/HEAD only. Also
+  serves the evaluation scorecard at `/evals`.
 - `tools/make_recommendation.py`: generate and persist one deterministic
   recommendation for a user in a context, using only beliefs authorized by
   the recommendation context/risk policy.
