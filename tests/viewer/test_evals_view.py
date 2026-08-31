@@ -50,6 +50,17 @@ class ShippedManifestsScorecardTests(unittest.TestCase):
         # a link back to the normal viewer
         self.assertIn('href="/"', html)
 
+    def test_scorecard_renders_nav_links_to_both_viewer_pages(self) -> None:
+        report, resolved = collect_eval_report()
+        html = render_evals_html(report, manifest_dir=resolved)
+        self.assertIn('<nav class="nav">', html)
+        self.assertIn("User Model", html)
+        self.assertIn("Eval Scorecard", html)
+        self.assertIn('href="/"', html)
+        self.assertIn('href="/evals"', html)
+        # the scorecard marks its own nav link active
+        self.assertIn('<a href="/evals" class="active">Eval Scorecard</a>', html)
+
     def test_every_check_row_is_shown(self) -> None:
         report, resolved = collect_eval_report()
         html = render_evals_html(report, manifest_dir=resolved)

@@ -190,8 +190,9 @@ seed and use a throwaway demo database.
 its own fresh in-memory database -- the served database is never touched) and
 shows summary counts, every scenario's pass/fail, and every check. A missing
 or broken manifest renders as a failed scenario instead of crashing the
-server. Point it elsewhere with `--evals-dir`. The normal viewer at `/` is
-unchanged.
+server. Point it elsewhere with `--evals-dir`. Both pages carry a plain-link
+nav header ("User Model" / "Eval Scorecard") so `/` and `/evals` cross-link;
+there is no JavaScript and no write action anywhere in the viewer.
 
 Run the evaluation harness:
 

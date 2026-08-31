@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.evals.harness import EvalReport, run_manifests
-from src.viewer.user_model_view import _CSS, _esc, _table, _tag
+from src.viewer.user_model_view import _CSS, _esc, _nav, _table, _tag
 
 _EVALS_CSS = """
 .scenario { margin: 1.5rem 0; }
@@ -133,12 +133,12 @@ def render_evals_html(
 <style>{_CSS}{_EVALS_CSS}</style>
 </head>
 <body>
+{_nav("evals")}
 <h1>Adaptive user model &mdash; evaluation scorecard</h1>
 <div class="meta">
   <span class="readonly">READ-ONLY</span> {overall}
   &middot; manifests: <code>{html.escape(str(manifest_dir))}</code><br>
   generated {html.escape(generated_at.isoformat())}
-  &middot; <a href="/">back to the user model viewer</a>
 </div>
 {_summary_cards(report)}
 {body_sections}

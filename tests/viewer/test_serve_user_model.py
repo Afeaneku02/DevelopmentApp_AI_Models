@@ -274,6 +274,25 @@ class EvalsRouteTests(unittest.TestCase):
         self.assertIn("could not run this scenario", body)
         self.assertEqual(again, 200)
 
+    def test_both_routes_serve_cross_linking_nav(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_db(db_path, {"evt_1": "usr_1"})
+            evals_dir = self._evals_dir(tmp, {"quick": _QUICK_SCENARIO})
+
+            with _running_server(db_path, evals_dir=evals_dir) as base:
+                _, root = _get(base + "/")
+                _, evals = _get(base + "/evals")
+
+        for body in (root, evals):
+            self.assertIn('<nav class="nav">', body)
+            self.assertIn(">User Model</a>", body)
+            self.assertIn(">Eval Scorecard</a>", body)
+            self.assertIn('href="/"', body)
+            self.assertIn('href="/evals"', body)
+        self.assertIn('<a href="/" class="active">User Model</a>', root)
+        self.assertIn('<a href="/evals" class="active">Eval Scorecard</a>', evals)
+
     def test_post_to_evals_is_rejected_with_405(self) -> None:
         with TemporaryDirectory() as tmp:
             db_path = str(Path(tmp) / "events.sqlite3")

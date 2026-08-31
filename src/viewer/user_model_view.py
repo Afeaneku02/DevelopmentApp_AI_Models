@@ -538,7 +538,30 @@ td.wrap { white-space: normal; min-width: 18rem; }
 .tag.not_required, .tag.unknown, .tag.not_yet_known {
     background: #e7ebf0; color: #444; border: 1px solid #ccc; }
 .empty { color: #888; font-style: italic; margin-bottom: .5rem; }
+.nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 1rem; }
+.nav a { padding: .25rem .65rem; border-radius: 4px; text-decoration: none; font-weight: 600;
+         font-size: .85rem; background: #e7ebf0; color: #1b1f24; border: 1px solid #d9dde1; }
+.nav a.active { background: #2f6fb0; color: #fff; border-color: #2f6fb0; }
+@media (prefers-color-scheme: dark) {
+    .nav a { background: #262b30; color: #e6e6e6; border-color: #333; }
+    .nav a.active { background: #2f6fb0; color: #fff; border-color: #2f6fb0; }
+}
 """
+
+# The two read-only viewer pages and their routes. ``_nav()`` renders the
+# shared header nav so ``/`` and ``/evals`` always link to each other.
+_NAV_LINKS = (("/", "User Model", "user_model"), ("/evals", "Eval Scorecard", "evals"))
+
+
+def _nav(active: str) -> str:
+    """The shared top-of-page navigation shown on every viewer page (plain
+    links only -- no JavaScript, no write actions). ``active`` is
+    ``"user_model"`` or ``"evals"``."""
+    items = []
+    for href, label, key in _NAV_LINKS:
+        css = ' class="active"' if key == active else ""
+        items.append(f'<a href="{href}"{css}>{html.escape(label)}</a>')
+    return f'<nav class="nav">{"".join(items)}</nav>'
 
 
 def _esc(value: Any) -> str:
@@ -842,6 +865,7 @@ def render_html(view_model: ViewModel) -> str:
 <style>{_CSS}</style>
 </head>
 <body>
+{_nav("user_model")}
 <h1>Adaptive user model &mdash; read-only viewer</h1>
 <div class="meta">
   <span class="readonly">READ-ONLY</span>
