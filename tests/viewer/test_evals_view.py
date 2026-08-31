@@ -22,7 +22,7 @@ from src.viewer.evals_view import (
 _REQUIRED_SCENARIOS = {
     "clean_support_raises_confidence",
     "mild_contradiction_lowers_confidence",
-    "strong_contradiction_contests_belief",
+    "strong_contradiction_demotes_belief",
     "invalidation_locks_stale_belief",
     "recommendation_uses_only_allowed_beliefs",
     "outcome_learning_creates_weak_proposals",
