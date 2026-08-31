@@ -1,0 +1,27 @@
+{
+  "name": "review_approval_promotes_evidence",
+  "description": "A manual reviewer approving an outcome-learning signal with --promote --recompute turns its proposal into real belief_evidence and moves the belief's confidence through the real recompute path.",
+  "steps": [
+    {"op": "evidence", "id": "s1", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "recorded_event", "days_before_as_of": 20},
+    {"op": "recompute", "belief": "adherence", "belief_key": "higher_adherence_after_work", "belief_value": true, "checkpoint": "initial"},
+
+    {"op": "recommendation", "id": "r1", "context_key": "fitness_scheduling"},
+    {"op": "recommendation", "id": "r2", "context_key": "fitness_scheduling"},
+    {"op": "recommendation", "id": "r3", "context_key": "fitness_scheduling"},
+    {"op": "recommendation", "id": "r4", "context_key": "fitness_scheduling"},
+    {"op": "outcome", "recommendation": "r1", "followed": "followed", "result": "successful"},
+    {"op": "outcome", "recommendation": "r2", "followed": "followed", "result": "successful"},
+    {"op": "outcome", "recommendation": "r3", "followed": "followed", "result": "successful"},
+    {"op": "outcome", "recommendation": "r4", "followed": "followed", "result": "successful"},
+    {"op": "learn", "id": "signal", "context": "fitness_scheduling"},
+
+    {"op": "review", "signal": "signal", "review_id": "rev_1", "reviewer_id": "alice", "decision": "approved", "promote": true, "recompute": true, "notes": "four repeated positive trials, low-risk context"}
+  ],
+  "expect": [
+    {"check": "review_status", "signal": "signal", "equals": "approved"},
+    {"check": "promoted_evidence_count", "signal": "signal", "equals": 1},
+    {"check": "belief_confidence", "belief": "adherence", "gt_checkpoint": "initial"},
+    {"check": "belief_locked", "belief": "adherence", "equals": false},
+    {"check": "belief_evidence_count", "belief": "adherence", "active": true, "equals": 2}
+  ]
+}

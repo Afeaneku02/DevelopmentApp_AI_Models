@@ -185,6 +185,28 @@ server re-reads the database on every request and accepts optional
 `?user_id=` / `?belief_id=` query parameters. Pass `--demo` to either tool to
 seed and use a throwaway demo database.
 
+Run the evaluation harness:
+
+```bash
+python tools/evaluate_user_model.py --manifest examples/evals              # scorecard, exits nonzero on failure
+python tools/evaluate_user_model.py --manifest examples/evals --format json
+python tools/evaluate_user_model.py --manifest examples/evals/clean_support_raises_confidence.json --verbose
+```
+
+Each *scenario manifest* under `examples/evals/` describes a sequence of
+lifecycle steps (events, evidence, recompute, recommendation, outcomes,
+outcome-learning, manual review, promotion) plus the expectations that should
+hold afterwards. The harness replays every scenario against its own fresh
+in-memory database through the same sanctioned functions the CLIs use -- it
+adds no model behaviour -- then scores confidence, belief status, evidence
+counts, recommendation belief-eligibility, outcome-learning signals, review
+gates, and promoted evidence against the manifest. It exits `0` only when
+every expectation in every scenario holds (`1` on any failure, `2` on a usage
+error), so it drops straight into CI. The eight bundled scenarios cover clean
+support raising confidence, mild vs. strong contradiction, invalidation
+locking a stale belief, context-restricted recommendation inputs, conservative
+weak-only outcome-learning proposals, and review approval vs. rejection.
+
 ## Main Tools
 
 - `tools/run_closed_loop_demo.py`: build the entire loop (event -> ... ->
@@ -228,6 +250,10 @@ seed and use a throwaway demo database.
   `--promote` (and recomputes only with `--recompute`), via the same gated
   promotion path. Duplicate approvals are blocked unless `--allow-duplicate`.
 - `tools/run_manifest.py`: run a JSON manifest through the existing tools.
+- `tools/evaluate_user_model.py`: run scenario manifests
+  (`examples/evals/*.json`) through the full lifecycle and score the result
+  against their expectations. Prints a scorecard (text or `--format json`);
+  exits nonzero if any expectation fails.
 
 ## Manifest References
 
@@ -260,6 +286,14 @@ python -m unittest tests.event_intake.test_run_manifest -v
 python -m unittest tests.beliefs.test_canonicalization -v
 python -m unittest tests.beliefs.test_duplicate_suppression -v
 python -m unittest tests.event_intake.test_resolve_belief_key -v
+python -m unittest tests.evals.test_evaluate_user_model -v
+```
+
+The evaluation harness (`tools/evaluate_user_model.py`) is itself a
+scenario-level test of the whole lifecycle and is safe to run in CI:
+
+```bash
+python tools/evaluate_user_model.py --manifest examples/evals
 ```
 
 ## Current Limitations

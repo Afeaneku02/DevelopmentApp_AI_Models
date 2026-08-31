@@ -1,0 +1,21 @@
+{
+  "name": "recommendation_uses_only_allowed_beliefs",
+  "description": "A recommendation is built only from beliefs authorized for the context; a locked belief and a disallowed-context belief are excluded and recorded as blocked.",
+  "steps": [
+    {"op": "evidence", "id": "ok1", "belief": "allowed", "direction": "support", "strength": 0.9, "source_type": "recorded_event", "days_before_as_of": 13},
+    {"op": "evidence", "id": "ok2", "belief": "allowed", "direction": "support", "strength": 0.9, "source_type": "explicit_user_statement", "days_before_as_of": 11},
+    {"op": "recompute", "belief": "allowed", "belief_key": "higher_adherence_after_work", "belief_value": true},
+
+    {"op": "evidence", "id": "lk1", "belief": "locked", "direction": "support", "strength": 0.9, "source_type": "recorded_event", "days_before_as_of": 13},
+    {"op": "recompute", "belief": "locked", "belief_key": "prefers_evening_exercise_sessions", "belief_value": true},
+    {"op": "lock", "belief": "locked"},
+
+    {"op": "recommendation", "id": "rec", "context_key": "fitness_scheduling"}
+  ],
+  "expect": [
+    {"check": "recommendation_uses_only", "recommendation": "rec", "allowed": ["allowed"]},
+    {"check": "recommendation_excludes", "recommendation": "rec", "belief": "locked", "require_blocked": true},
+    {"check": "recommendation_field", "recommendation": "rec", "field": "risk_tier", "equals": "low"},
+    {"check": "recommendation_field", "recommendation": "rec", "field": "review_required", "equals": false}
+  ]
+}

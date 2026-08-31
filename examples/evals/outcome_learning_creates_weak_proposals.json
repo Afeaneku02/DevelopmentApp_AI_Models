@@ -1,0 +1,29 @@
+{
+  "name": "outcome_learning_creates_weak_proposals",
+  "description": "Repeated positive outcomes for a recommendation pattern produce a conservative outcome-learning signal: weak, non-causal repeated_pattern_summary evidence proposals only, and nothing is promoted automatically.",
+  "steps": [
+    {"op": "evidence", "id": "s1", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "recorded_event", "days_before_as_of": 20},
+    {"op": "recompute", "belief": "adherence", "belief_key": "higher_adherence_after_work", "belief_value": true},
+
+    {"op": "recommendation", "id": "r1", "context_key": "fitness_scheduling"},
+    {"op": "recommendation", "id": "r2", "context_key": "fitness_scheduling"},
+    {"op": "recommendation", "id": "r3", "context_key": "fitness_scheduling"},
+    {"op": "recommendation", "id": "r4", "context_key": "fitness_scheduling"},
+
+    {"op": "outcome", "recommendation": "r1", "followed": "followed", "result": "successful"},
+    {"op": "outcome", "recommendation": "r2", "followed": "followed", "result": "successful"},
+    {"op": "outcome", "recommendation": "r3", "followed": "followed", "result": "successful"},
+    {"op": "outcome", "recommendation": "r4", "followed": "followed", "result": "successful"},
+
+    {"op": "learn", "id": "signal", "context": "fitness_scheduling"}
+  ],
+  "expect": [
+    {"check": "signal_exists", "signal": "signal", "equals": true},
+    {"check": "signal_field", "signal": "signal", "field": "kind", "in": ["support", "weak_contradiction"]},
+    {"check": "signal_field", "signal": "signal", "field": "causal_claim", "equals": false},
+    {"check": "signal_field", "signal": "signal", "field": "proposed_evidence_count", "min": 1},
+    {"check": "signal_proposed_strength", "signal": "signal", "max": 0.3, "gt": 0.0},
+    {"check": "signal_proposed_source_types", "signal": "signal", "equals": "repeated_pattern_summary"},
+    {"check": "promoted_evidence_count", "signal": "signal", "equals": 0}
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "review_rejection_promotes_nothing",
+  "description": "A manual reviewer rejecting an outcome-learning signal records the decision and promotes nothing: no belief_evidence is written and the belief is untouched.",
+  "steps": [
+    {"op": "evidence", "id": "s1", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "recorded_event", "days_before_as_of": 20},
+    {"op": "recompute", "belief": "adherence", "belief_key": "higher_adherence_after_work", "belief_value": true, "checkpoint": "initial"},
+
+    {"op": "recommendation", "id": "r1", "context_key": "fitness_scheduling"},
+    {"op": "recommendation", "id": "r2", "context_key": "fitness_scheduling"},
+    {"op": "recommendation", "id": "r3", "context_key": "fitness_scheduling"},
+    {"op": "recommendation", "id": "r4", "context_key": "fitness_scheduling"},
+    {"op": "outcome", "recommendation": "r1", "followed": "followed", "result": "successful"},
+    {"op": "outcome", "recommendation": "r2", "followed": "followed", "result": "successful"},
+    {"op": "outcome", "recommendation": "r3", "followed": "followed", "result": "successful"},
+    {"op": "outcome", "recommendation": "r4", "followed": "followed", "result": "successful"},
+    {"op": "learn", "id": "signal", "context": "fitness_scheduling"},
+
+    {"op": "review", "signal": "signal", "review_id": "rev_1", "reviewer_id": "alice", "decision": "rejected", "notes": "outcomes are all self-reported; not enough to move a belief"}
+  ],
+  "expect": [
+    {"check": "review_status", "signal": "signal", "equals": "rejected"},
+    {"check": "promoted_evidence_count", "signal": "signal", "equals": 0},
+    {"check": "belief_confidence", "belief": "adherence", "eq_checkpoint": "initial"},
+    {"check": "belief_locked", "belief": "adherence", "equals": false},
+    {"check": "belief_evidence_count", "belief": "adherence", "active": true, "equals": 1}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "clean_support_raises_confidence",
+  "description": "Clean, consistent supporting evidence raises a belief's confidence.",
+  "steps": [
+    {"op": "evidence", "id": "s1", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "recorded_event", "days_before_as_of": 14},
+    {"op": "recompute", "belief": "adherence", "belief_key": "higher_adherence_after_work", "belief_value": true, "checkpoint": "one_leaf"},
+
+    {"op": "evidence", "id": "s2", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "explicit_user_statement", "days_before_as_of": 11},
+    {"op": "evidence", "id": "s3", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "model_observation", "days_before_as_of": 8},
+    {"op": "evidence", "id": "s4", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "recorded_event", "days_before_as_of": 5},
+    {"op": "recompute", "belief": "adherence", "belief_key": "higher_adherence_after_work", "belief_value": true, "checkpoint": "four_leaves"}
+  ],
+  "expect": [
+    {"check": "belief_confidence", "belief": "adherence", "gt_checkpoint": "one_leaf"},
+    {"check": "belief_confidence", "belief": "adherence", "min": 0.3, "max": 0.98},
+    {"check": "belief_field", "belief": "adherence", "field": "supporting_evidence_count", "equals": 4},
+    {"check": "belief_field", "belief": "adherence", "field": "contradicting_evidence_count", "equals": 0},
+    {"check": "belief_status", "belief": "adherence", "in": ["provisional", "validated"]},
+    {"check": "belief_locked", "belief": "adherence", "equals": false}
+  ]
+}

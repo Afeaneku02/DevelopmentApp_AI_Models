@@ -1,0 +1,25 @@
+{
+  "name": "strong_contradiction_contests_belief",
+  "description": "A provisional belief hit with repeated strong contradicting evidence is demoted to candidate, its confidence collapses, and contradicting evidence outnumbers supporting evidence in the ledger (contested/rejected behaviour).",
+  "steps": [
+    {"op": "evidence", "id": "s1", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "recorded_event", "days_before_as_of": 14},
+    {"op": "evidence", "id": "s2", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "explicit_user_statement", "days_before_as_of": 13},
+    {"op": "evidence", "id": "s3", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "model_observation", "days_before_as_of": 12},
+    {"op": "recompute", "belief": "adherence", "belief_key": "higher_adherence_after_work", "belief_value": true, "checkpoint": "supported"},
+
+    {"op": "evidence", "id": "c1", "belief": "adherence", "direction": "contradict", "strength": 0.95, "source_type": "recorded_event", "days_before_as_of": 9},
+    {"op": "evidence", "id": "c2", "belief": "adherence", "direction": "contradict", "strength": 0.95, "source_type": "explicit_user_statement", "days_before_as_of": 8},
+    {"op": "evidence", "id": "c3", "belief": "adherence", "direction": "contradict", "strength": 0.95, "source_type": "explicit_user_correction", "days_before_as_of": 7},
+    {"op": "evidence", "id": "c4", "belief": "adherence", "direction": "contradict", "strength": 0.95, "source_type": "model_observation", "days_before_as_of": 6},
+    {"op": "evidence", "id": "c5", "belief": "adherence", "direction": "contradict", "strength": 0.95, "source_type": "unverified_hypothesis", "days_before_as_of": 5},
+    {"op": "recompute", "belief": "adherence", "belief_key": "higher_adherence_after_work", "belief_value": true, "checkpoint": "contested"}
+  ],
+  "expect": [
+    {"check": "checkpoint", "name": "supported", "field": "status", "equals": "provisional"},
+    {"check": "belief_status", "belief": "adherence", "equals": "candidate"},
+    {"check": "belief_confidence", "belief": "adherence", "lt_checkpoint": "supported"},
+    {"check": "belief_confidence", "belief": "adherence", "max": 0.3},
+    {"check": "belief_field", "belief": "adherence", "field": "contradicting_evidence_count", "equals": 5},
+    {"check": "belief_field", "belief": "adherence", "field": "supporting_evidence_count", "equals": 3}
+  ]
+}

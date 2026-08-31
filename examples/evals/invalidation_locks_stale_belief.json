@@ -1,0 +1,17 @@
+{
+  "name": "invalidation_locks_stale_belief",
+  "description": "Invalidating a belief's evidence fail-closes it: the belief becomes locked_until_recompute with no active evidence left, so its cached confidence is no longer treated as authoritative.",
+  "steps": [
+    {"op": "evidence", "id": "s1", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "recorded_event", "days_before_as_of": 14},
+    {"op": "evidence", "id": "s2", "belief": "adherence", "direction": "support", "strength": 0.9, "source_type": "explicit_user_statement", "days_before_as_of": 12},
+    {"op": "recompute", "belief": "adherence", "belief_key": "higher_adherence_after_work", "belief_value": true, "checkpoint": "before_invalidation"},
+
+    {"op": "invalidate_evidence", "evidence": ["s1", "s2"], "reason": "user retracted the underlying events"}
+  ],
+  "expect": [
+    {"check": "belief_locked", "belief": "adherence", "equals": true},
+    {"check": "belief_evidence_count", "belief": "adherence", "active": true, "equals": 0},
+    {"check": "belief_evidence_count", "belief": "adherence", "active": false, "equals": 2},
+    {"check": "belief_confidence", "belief": "adherence", "eq_checkpoint": "before_invalidation"}
+  ]
+}
