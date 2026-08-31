@@ -1,8 +1,17 @@
 # DevelopmentApp AI Models
 
+[![CI](https://github.com/Afeaneku02/DevelopmentApp_AI_Models/actions/workflows/ci.yml/badge.svg)](https://github.com/Afeaneku02/DevelopmentApp_AI_Models/actions/workflows/ci.yml)
+
 This repository currently contains the early Better You adaptive user model
 backend: deterministic data models, SQLite persistence, scoring/recompute
 logic, manual CLI tools, demo manifests, and tests.
+
+Every push and pull request runs GitHub Actions
+(`.github/workflows/ci.yml`, Ubuntu + Python 3.12): it installs
+`requirements.txt`, runs the full `unittest` suite
+(`python -m unittest discover -s tests`), and then runs the evaluation
+harness (`python tools/evaluate_user_model.py --manifest examples/evals`).
+The build fails if any test or any eval scenario fails.
 
 The current goal is to make the model testable and auditable before building a
 full app UI. Most workflows are driven through small command-line tools in
@@ -305,6 +314,16 @@ scenario-level test of the whole lifecycle and is safe to run in CI:
 ```bash
 python tools/evaluate_user_model.py --manifest examples/evals
 ```
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push and pull request (Ubuntu,
+Python 3.12). It installs `requirements.txt`, then runs the same two commands
+as above -- `python -m unittest discover -s tests` and
+`python tools/evaluate_user_model.py --manifest examples/evals` -- so a
+regression in either the unit tests or the end-to-end eval scenarios fails
+the build. The badge at the top of this file reflects the latest run on the
+default branch.
 
 ## Current Limitations
 
