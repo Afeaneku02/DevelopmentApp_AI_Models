@@ -225,7 +225,7 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", page)
         self.assertNotIn("<script>alert", page)
 
-    def test_page_renders_nav_links_to_both_viewer_pages(self) -> None:
+    def test_page_renders_nav_links_to_the_other_viewer_pages(self) -> None:
         repo = Repository.in_memory()
         try:
             view_model = collect_view_model(repo, db_path="demo.sqlite3")
@@ -235,7 +235,9 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn('<nav class="nav">', page)
         self.assertIn("User Model", page)
         self.assertIn("Eval Scorecard", page)
+        self.assertIn("Review Queue", page)
         self.assertIn('href="/evals"', page)
+        self.assertIn('href="/reviews"', page)
         self.assertIn('href="/"', page)
         # the user-model page marks its own nav link active
         self.assertIn('<a href="/" class="active">User Model</a>', page)

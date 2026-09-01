@@ -39,6 +39,13 @@ a missing or broken manifest is shown as a failed scenario rather than
 crashing the server. Pass ``--evals-dir`` to point at a different manifest
 directory.
 
+``/reviews`` renders a read-only manual review queue: outcome-learning
+signals that still need a human decision before promotion, shown with their
+proposed evidence, plus the signals already approved/rejected and the full
+review trail. It reads the served database read-only (same as ``/``) and
+has no approve/reject controls -- decisions are made from
+``tools/review_outcome_learning_signal.py``.
+
 Stdlib only (``http.server``); the repo has no web framework.
 """
 from __future__ import annotations
@@ -59,6 +66,7 @@ from src.viewer.evals_view import (  # noqa: E402
     collect_eval_report,
     render_evals_html,
 )
+from src.viewer.reviews_view import collect_review_queue, render_reviews_html  # noqa: E402
 from src.viewer.user_model_view import collect_view_model, render_html  # noqa: E402
 from tools.view_user_model import _seed_demo_database  # noqa: E402  (shared demo-seed helper)
 
@@ -119,6 +127,33 @@ def render_page(
     return 200, "text/html; charset=utf-8", render_html(view_model)
 
 
+def render_reviews_page(db_path: str, *, user_id: str | None = None) -> tuple[int, str, str]:
+    """Read the database read-only and render the manual review queue page.
+
+    Returns ``(status_code, content_type, body)``. Read-only in exactly the
+    same way as ``render_page``: opens ``Repository.readonly_at_path`` and
+    calls only the pure ``collect_review_queue`` / ``render_reviews_html``
+    helpers -- no recompute, no promotion, no write. A missing database is
+    reported as ``503`` rather than raised, so the server stays up.
+    """
+    try:
+        repo = Repository.readonly_at_path(db_path)
+    except FileNotFoundError as exc:
+        return 503, "text/plain; charset=utf-8", f"user model database unavailable: {exc}"
+
+    try:
+        queue = collect_review_queue(
+            repo,
+            db_path=db_path,
+            user_id=user_id,
+            generated_at=datetime.now(timezone.utc),
+        )
+    finally:
+        repo.close()
+
+    return 200, "text/html; charset=utf-8", render_reviews_html(queue)
+
+
 def render_evals_page(manifest_dir: str | Path | None = None) -> tuple[int, str, str]:
     """Run the evaluation harness over ``manifest_dir`` and render the
     scorecard page.
@@ -142,7 +177,8 @@ def build_handler(
     """A ``BaseHTTPRequestHandler`` subclass bound to one database path.
 
     Serves the viewer at ``/`` (honouring ``?user_id=`` / ``?belief_id=``),
-    the evaluation scorecard at ``/evals``, returns 204 for
+    the evaluation scorecard at ``/evals``, the manual review queue at
+    ``/reviews`` (honouring ``?user_id=``), returns 204 for
     ``/favicon.ico``, 404 for anything else, and 405 for any method other
     than GET/HEAD. There is no route that writes.
     """
@@ -185,12 +221,18 @@ def build_handler(
                 self._write(status, content_type, body, include_body=include_body)
                 return
 
+            params = parse_qs(parsed.query)
+            user_id = params.get("user_id", [None])[0] or None
+
+            if route == "/reviews":
+                status, content_type, body = render_reviews_page(db_path, user_id=user_id)
+                self._write(status, content_type, body, include_body=include_body)
+                return
+
             if route != "/":
                 self._write(404, "text/plain; charset=utf-8", "not found", include_body=include_body)
                 return
 
-            params = parse_qs(parsed.query)
-            user_id = params.get("user_id", [None])[0] or None
             belief_id = params.get("belief_id", [None])[0] or None
 
             status, content_type, body = render_page(db_path, user_id=user_id, belief_id=belief_id)
@@ -264,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     host, port = httpd.server_address[0], httpd.server_address[1]
     print(f"Serving read-only user model viewer for {db_path!r} at http://{host}:{port}/  (Ctrl+C to stop)")
     print(f"  evaluation scorecard: http://{host}:{port}/evals", file=sys.stderr)
+    print(f"  manual review queue:  http://{host}:{port}/reviews", file=sys.stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -548,15 +548,19 @@ td.wrap { white-space: normal; min-width: 18rem; }
 }
 """
 
-# The two read-only viewer pages and their routes. ``_nav()`` renders the
-# shared header nav so ``/`` and ``/evals`` always link to each other.
-_NAV_LINKS = (("/", "User Model", "user_model"), ("/evals", "Eval Scorecard", "evals"))
+# The read-only viewer pages and their routes. ``_nav()`` renders the shared
+# header nav so every page links to every other.
+_NAV_LINKS = (
+    ("/", "User Model", "user_model"),
+    ("/evals", "Eval Scorecard", "evals"),
+    ("/reviews", "Review Queue", "reviews"),
+)
 
 
 def _nav(active: str) -> str:
     """The shared top-of-page navigation shown on every viewer page (plain
     links only -- no JavaScript, no write actions). ``active`` is
-    ``"user_model"`` or ``"evals"``."""
+    ``"user_model"``, ``"evals"``, or ``"reviews"``."""
     items = []
     for href, label, key in _NAV_LINKS:
         css = ' class="active"' if key == active else ""

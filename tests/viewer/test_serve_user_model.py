@@ -22,7 +22,12 @@ from tempfile import TemporaryDirectory
 
 from src.events.models import UserEvent
 from src.storage.repository import Repository
-from tools.serve_user_model import render_evals_page, render_page, serve
+from tools.serve_user_model import (
+    render_evals_page,
+    render_page,
+    render_reviews_page,
+    serve,
+)
 
 _QUICK_SCENARIO = {
     "name": "quick_smoke",
@@ -274,7 +279,7 @@ class EvalsRouteTests(unittest.TestCase):
         self.assertIn("could not run this scenario", body)
         self.assertEqual(again, 200)
 
-    def test_both_routes_serve_cross_linking_nav(self) -> None:
+    def test_all_routes_serve_cross_linking_nav(self) -> None:
         with TemporaryDirectory() as tmp:
             db_path = str(Path(tmp) / "events.sqlite3")
             _seed_db(db_path, {"evt_1": "usr_1"})
@@ -283,15 +288,19 @@ class EvalsRouteTests(unittest.TestCase):
             with _running_server(db_path, evals_dir=evals_dir) as base:
                 _, root = _get(base + "/")
                 _, evals = _get(base + "/evals")
+                _, reviews = _get(base + "/reviews")
 
-        for body in (root, evals):
+        for body in (root, evals, reviews):
             self.assertIn('<nav class="nav">', body)
             self.assertIn(">User Model</a>", body)
             self.assertIn(">Eval Scorecard</a>", body)
+            self.assertIn(">Review Queue</a>", body)
             self.assertIn('href="/"', body)
             self.assertIn('href="/evals"', body)
+            self.assertIn('href="/reviews"', body)
         self.assertIn('<a href="/" class="active">User Model</a>', root)
         self.assertIn('<a href="/evals" class="active">Eval Scorecard</a>', evals)
+        self.assertIn('<a href="/reviews" class="active">Review Queue</a>', reviews)
 
     def test_post_to_evals_is_rejected_with_405(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -300,6 +309,101 @@ class EvalsRouteTests(unittest.TestCase):
             with _running_server(db_path) as base:
                 status, _ = _request(base + "/evals", method="POST", data=b"{}")
         self.assertEqual(status, 405)
+
+
+class ReviewsRouteTests(unittest.TestCase):
+    def _seed_signals(self, db_path: str) -> tuple[str, str]:
+        """One pending signal (usr_pending) and one rejected signal
+        (usr_reviewed). Returns their signal_ids."""
+        from datetime import datetime
+
+        from src.recommendations.review import review_outcome_learning_signal
+        from tests.recommendations.test_promotion import _seed_model
+
+        reviewed_at = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        repo = Repository.at_path(db_path)
+        try:
+            _, pending = _seed_model(repo, user_id="usr_pending", belief_id="bel_p", event_id="evt_p")
+            _, reviewed = _seed_model(repo, user_id="usr_reviewed", belief_id="bel_r", event_id="evt_r")
+            review_outcome_learning_signal(
+                repo, review_id="rev_r", signal_id=reviewed.signal_id, reviewer_id="alice",
+                decision="rejected", as_of=reviewed_at, notes="self-report only",
+            )
+        finally:
+            repo.close()
+        return pending.signal_id, reviewed.signal_id
+
+    def test_render_reviews_page_reports_a_missing_db_as_503(self) -> None:
+        status, content_type, body = render_reviews_page("no_such_reviews_db.sqlite3")
+        self.assertEqual(status, 503)
+        self.assertIn("text/plain", content_type)
+        self.assertIn("no_such_reviews_db.sqlite3", body)
+
+    def test_reviews_route_renders_and_does_not_modify_the_database(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            pending_id, reviewed_id = self._seed_signals(db_path)
+            before = Path(db_path).read_bytes()
+
+            with _running_server(db_path) as base:
+                status, body = _get(base + "/reviews")
+                # / and /evals are unchanged and still work
+                root_status, root_body = _get(base + "/")
+
+            self.assertEqual(status, 200)
+            self.assertIn("manual review queue", body.lower())
+            self.assertIn("Pending review", body)
+            # the un-reviewed signal is pending; the rejected one is not
+            self.assertIn(pending_id, body)
+            pending_block = body.split("Reviewed signals")[0]
+            self.assertIn(pending_id, pending_block)
+            self.assertNotIn(reviewed_id, pending_block)
+            # the reviewed signal shows with a rejected status badge
+            self.assertIn(reviewed_id, body)
+            self.assertIn('<span class="tag rejected">rejected</span>', body)
+            self.assertEqual(root_status, 200)
+            self.assertEqual(Path(db_path).read_bytes(), before)
+
+    def test_reviews_route_shows_proposed_evidence_for_pending_signals(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            pending_id, _ = self._seed_signals(db_path)
+            with _running_server(db_path) as base:
+                status, body = _get(base + "/reviews")
+        self.assertEqual(status, 200)
+        self.assertIn("Proposed evidence (pending signals)", body)
+        self.assertIn("bel_p", body)  # the pending signal's proposed-evidence belief
+
+    def test_reviews_route_user_scope_filters_signals(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            pending_id, reviewed_id = self._seed_signals(db_path)
+            with _running_server(db_path) as base:
+                status, body = _get(base + "/reviews?user_id=usr_pending")
+        self.assertEqual(status, 200)
+        self.assertIn(pending_id, body)
+        self.assertNotIn(reviewed_id, body)
+
+    def test_reviews_route_survives_a_missing_database(self) -> None:
+        with TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "nope.sqlite3")
+            with _running_server(missing) as base:
+                status, body = _get(base + "/reviews")
+                again, _ = _get(base + "/reviews")
+            self.assertEqual(status, 503)
+            self.assertIn("unavailable", body)
+            self.assertEqual(again, 503)
+            self.assertFalse(Path(missing).exists())
+
+    def test_post_to_reviews_is_rejected_with_405(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            _seed_db(db_path, {"evt_1": "usr_1"})
+            before = Path(db_path).read_bytes()
+            with _running_server(db_path) as base:
+                status, _ = _request(base + "/reviews", method="POST", data=b"{}")
+            self.assertEqual(status, 405)
+            self.assertEqual(Path(db_path).read_bytes(), before)
 
 
 if __name__ == "__main__":

@@ -199,9 +199,18 @@ seed and use a throwaway demo database.
 its own fresh in-memory database -- the served database is never touched) and
 shows summary counts, every scenario's pass/fail, and every check. A missing
 or broken manifest renders as a failed scenario instead of crashing the
-server. Point it elsewhere with `--evals-dir`. Both pages carry a plain-link
-nav header ("User Model" / "Eval Scorecard") so `/` and `/evals` cross-link;
-there is no JavaScript and no write action anywhere in the viewer.
+server. Point it elsewhere with `--evals-dir`.
+
+A read-only manual review queue is served at `/reviews`: outcome-learning
+signals still awaiting a human decision before promotion, shown with their
+proposed evidence, plus the signals already approved/rejected (with a status
+badge) and the full review trail. It reads the served database read-only,
+honours `?user_id=`, and has no approve/reject controls -- decisions are
+made from `tools/review_outcome_learning_signal.py`.
+
+Every page carries a plain-link nav header ("User Model" / "Eval Scorecard"
+/ "Review Queue") so `/`, `/evals`, and `/reviews` cross-link; there is no
+JavaScript and no write action anywhere in the viewer.
 
 Run the evaluation harness:
 
@@ -248,7 +257,8 @@ weak-only outcome-learning proposals, and review approval vs. rejection.
   HTML page.
 - `tools/serve_user_model.py`: serve that page locally (stdlib `http.server`),
   re-reading the database on every request. Read-only; GET/HEAD only. Also
-  serves the evaluation scorecard at `/evals`.
+  serves the evaluation scorecard at `/evals` and the manual review queue at
+  `/reviews`.
 - `tools/make_recommendation.py`: generate and persist one deterministic
   recommendation for a user in a context, using only beliefs authorized by
   the recommendation context/risk policy.
