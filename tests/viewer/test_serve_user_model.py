@@ -374,6 +374,31 @@ class ReviewsRouteTests(unittest.TestCase):
         self.assertIn("Proposed evidence (pending signals)", body)
         self.assertIn("bel_p", body)  # the pending signal's proposed-evidence belief
 
+    def test_reviews_route_shows_copyable_commands_using_the_served_db_path(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "events.sqlite3")
+            pending_id, reviewed_id = self._seed_signals(db_path)
+            with _running_server(db_path) as base:
+                status, body = _get(base + "/reviews")
+
+        self.assertEqual(status, 200)
+        cmd_section = body.split("Suggested review commands")[1].split("Reviewed signals")[0]
+        self.assertIn("tools/review_outcome_learning_signal.py", cmd_section)
+        self.assertIn(pending_id, cmd_section)
+        self.assertNotIn(reviewed_id, cmd_section)
+        self.assertIn("--decision approved --promote --recompute", cmd_section)
+        self.assertIn("--decision rejected --notes", cmd_section)
+        # the actual served --db path is used, not a placeholder (exact
+        # PowerShell-quoting form is covered at the unit level in
+        # tests/viewer/test_reviews_view.py)
+        import html as html_module
+
+        self.assertIn(html_module.escape(db_path), cmd_section)
+        # no clickable/write control renders the commands
+        lowered = cmd_section.lower()
+        for token in ("<a ", "<form", "<button", "<input", "<script", "onclick=", 'method="post"'):
+            self.assertNotIn(token, lowered)
+
     def test_reviews_route_user_scope_filters_signals(self) -> None:
         with TemporaryDirectory() as tmp:
             db_path = str(Path(tmp) / "events.sqlite3")

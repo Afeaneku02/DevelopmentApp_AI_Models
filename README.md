@@ -205,8 +205,14 @@ A read-only manual review queue is served at `/reviews`: outcome-learning
 signals still awaiting a human decision before promotion, shown with their
 proposed evidence, plus the signals already approved/rejected (with a status
 badge) and the full review trail. It reads the served database read-only,
-honours `?user_id=`, and has no approve/reject controls -- decisions are
-made from `tools/review_outcome_learning_signal.py`.
+honours `?user_id=`, and has no approve/reject controls. For each pending
+signal it prints two ready-to-copy PowerShell commands -- approve + promote +
+recompute, and reject -- that already carry the real `--db`, `--signal-id`,
+and a deterministic suggested `--review-id`; only `--reviewer-id` and the
+reject reason are left as `<placeholder>` text. They render as plain
+preformatted text, not a link or button, so nothing on the page can execute
+them -- a human still copies the command into their own shell and runs
+`tools/review_outcome_learning_signal.py` themselves.
 
 Every page carries a plain-link nav header ("User Model" / "Eval Scorecard"
 / "Review Queue") so `/`, `/evals`, and `/reviews` cross-link; there is no

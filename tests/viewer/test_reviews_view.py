@@ -5,7 +5,10 @@ Covers: an empty database renders every section empty; a pending
 outcome-learning signal appears in "Pending review" with its proposed
 evidence; a signal with an approved/rejected review is not listed as pending
 and shows a status badge; the review trail is rendered; user scoping;
-collecting the queue mutates nothing; manifest/DB text is HTML-escaped.
+collecting the queue mutates nothing; manifest/DB text is HTML-escaped;
+pending signals get copy-pasteable review-CLI commands that are plain text,
+never a clickable/write control, with the db path and signal id safely
+PowerShell-quoted and HTML-escaped.
 """
 from __future__ import annotations
 
@@ -14,7 +17,12 @@ from datetime import datetime, timezone
 
 from src.recommendations.review import review_outcome_learning_signal
 from src.storage.repository import Repository
-from src.viewer.reviews_view import collect_review_queue, render_reviews_html
+from src.viewer.reviews_view import (
+    collect_review_queue,
+    render_reviews_html,
+    review_commands,
+    suggested_review_id,
+)
 from tests.recommendations.test_promotion import _seed_model
 
 REVIEWED_AT = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
@@ -50,6 +58,7 @@ class EmptyQueueTests(unittest.TestCase):
         self.assertIn("No outcome-learning signals are waiting for review.", page)
         self.assertIn("No signals have been reviewed yet.", page)
         self.assertIn("No review decisions recorded.", page)
+        self.assertIn("No signals are waiting for review.", page)  # the commands section
 
 
 class PendingSignalTests(unittest.TestCase):
@@ -122,6 +131,103 @@ class ReviewedSignalTests(unittest.TestCase):
         self.assertEqual(queue.reviewed_signals[0]["review_status"], "approved")
         page = render_reviews_html(queue)
         self.assertIn('<span class="tag approved">approved</span>', page)
+
+
+class ReviewCommandsTests(unittest.TestCase):
+    def test_suggested_review_id_is_deterministic(self) -> None:
+        self.assertEqual(suggested_review_id("ols-abc123"), "review_ols-abc123")
+        self.assertEqual(suggested_review_id("ols-abc123"), suggested_review_id("ols-abc123"))
+
+    def test_pure_review_commands_use_the_sanctioned_cli_and_placeholders(self) -> None:
+        approve, reject = review_commands("events.sqlite3", "ols-abc123")
+        for cmd in (approve, reject):
+            self.assertTrue(cmd.startswith("python tools/review_outcome_learning_signal.py "))
+            self.assertIn("--db 'events.sqlite3'", cmd)
+            self.assertIn("--signal-id 'ols-abc123'", cmd)
+            self.assertIn("--review-id 'review_ols-abc123'", cmd)
+            self.assertIn("--reviewer-id <reviewer_id>", cmd)
+        self.assertIn("--decision approved --promote --recompute", approve)
+        self.assertIn('--decision rejected --notes "<reason>"', reject)
+        self.assertNotIn("--promote", reject)
+        self.assertNotIn("--recompute", reject)
+
+    def test_powershell_single_quotes_are_doubled(self) -> None:
+        approve, _ = review_commands("C:\\it's\\events.sqlite3", "ols-abc123")
+        # PowerShell's own escape for an embedded ' inside a '...' literal is ''
+        self.assertIn("--db 'C:\\it''s\\events.sqlite3'", approve)
+
+    def test_pending_signal_renders_both_commands(self) -> None:
+        repo, pending_id, reviewed_id = _seeded_repo()
+        try:
+            queue = collect_review_queue(repo, db_path="events.sqlite3")
+        finally:
+            repo.close()
+        page = render_reviews_html(queue)
+
+        self.assertIn("<h2>Suggested review commands</h2>", page)
+        expected_approve, expected_reject = review_commands("events.sqlite3", pending_id)
+        import html as html_module
+
+        self.assertIn(html_module.escape(expected_approve), page)
+        self.assertIn(html_module.escape(expected_reject), page)
+
+    def test_commands_are_not_rendered_as_clickable_write_actions(self) -> None:
+        repo, _, _ = _seeded_repo()
+        try:
+            page = render_reviews_html(collect_review_queue(repo, db_path="events.sqlite3"))
+        finally:
+            repo.close()
+        cmd_section = page.split("Suggested review commands")[1].split("Reviewed signals")[0]
+        lowered = cmd_section.lower()
+        for token in ("<a ", "<a>", "<form", "<button", "<input", "<script", "onclick=",
+                      'method="post"'):
+            self.assertNotIn(token, lowered)
+        # the commands are plain preformatted text, not a link/button label
+        self.assertIn("<pre class=\"cmd\">", cmd_section)
+
+    def test_reviewed_signal_does_not_get_a_pending_command_block(self) -> None:
+        repo, pending_id, reviewed_id = _seeded_repo()
+        try:
+            queue = collect_review_queue(repo, db_path="events.sqlite3")
+        finally:
+            repo.close()
+        page = render_reviews_html(queue)
+        cmd_section = page.split("Suggested review commands")[1].split("Reviewed signals")[0]
+        self.assertIn(pending_id, cmd_section)
+        self.assertNotIn(reviewed_id, cmd_section)
+
+    def test_a_fully_reviewed_database_shows_no_pending_commands(self) -> None:
+        repo = Repository.in_memory()
+        try:
+            _, signal = _seed_model(repo, user_id="u", belief_id="b", event_id="e")
+            review_outcome_learning_signal(
+                repo, review_id="rv1", signal_id=signal.signal_id, reviewer_id="bob",
+                decision="approved", as_of=REVIEWED_AT,
+            )
+            page = render_reviews_html(collect_review_queue(repo, db_path="events.sqlite3"))
+        finally:
+            repo.close()
+        self.assertIn("No signals are waiting for review.", page)
+        cmd_section = page.split("Suggested review commands")[1].split("Reviewed signals")[0]
+        self.assertNotIn(signal.signal_id, cmd_section)
+
+    def test_db_path_and_signal_id_are_safely_quoted_and_html_escaped(self) -> None:
+        tricky_db_path = "C:\\models\\a ' <script>alert(1)</script> db.sqlite3"
+        repo, pending_id, _ = _seeded_repo()
+        try:
+            page = render_reviews_html(
+                collect_review_queue(repo, db_path=tricky_db_path)
+            )
+        finally:
+            repo.close()
+
+        # the raw command text (PowerShell-quoted) must never appear unescaped
+        expected_approve, _ = review_commands(tricky_db_path, pending_id)
+        self.assertIn("<script>alert(1)</script>", expected_approve)  # sanity: the builder itself doesn't escape
+        self.assertNotIn("<script>alert(1)</script>", page)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        # the embedded single quote survives PowerShell-doubling then HTML escaping
+        self.assertIn("&#x27;&#x27;", page)
 
 
 class ScopingAndSafetyTests(unittest.TestCase):

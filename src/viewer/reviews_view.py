@@ -11,6 +11,15 @@ manual-review gate, applied to the section 12.6 learning loop):
   shown with a status badge and, separately, the full append-only review
   trail.
 
+Each pending signal also gets two ready-to-copy PowerShell commands
+(``review_commands()``) that run the one sanctioned review CLI
+(``tools/review_outcome_learning_signal.py``) with that signal's real
+``--db``/``--signal-id`` and a deterministic suggested ``--review-id``; only
+``--reviewer-id`` and the reject reason are left as ``<placeholder>`` text
+for a human to fill in. These are plain, non-interactive text -- there is no
+button, link, form, or script anywhere on the page that would execute them;
+a human still has to copy the text into their own shell.
+
 Everything here is read-only and side-effect free. ``collect_review_queue()``
 reads a ``Repository`` only through its own list helpers
 (``list_outcome_learning_signals``,
@@ -39,10 +48,22 @@ from src.viewer.user_model_view import (
 )
 
 # ``.tag.pending`` / ``.tag.approved`` / ``.tag.rejected`` / ``.tag.support``
-# and the rest are already defined in ``user_model_view._CSS``; this page
-# adds no styles of its own.
+# and the rest are already defined in ``user_model_view._CSS``; ``_REVIEWS_CSS``
+# below only styles this page's own suggested-command blocks.
 
 _PENDING = "pending"
+
+_REVIEWS_CSS = """
+.review-cmd { margin: .75rem 0 1.5rem; padding: .5rem .75rem; border: 1px solid #d9dde1;
+              border-radius: 6px; background: #fff; }
+@media (prefers-color-scheme: dark) { .review-cmd { background: #1e2226; border-color: #333; } }
+.review-cmd h3 { margin: 0 0 .5rem; font-size: .95rem; }
+.review-cmd .cmd-label { margin: .5rem 0 .15rem; font-size: .8rem; color: #666; font-weight: 600; }
+.review-cmd pre.cmd { margin: 0; padding: .5rem .6rem; border-radius: 4px; overflow-x: auto;
+                       background: #eef1f4; font-size: .8rem; white-space: pre-wrap;
+                       word-break: break-word; }
+@media (prefers-color-scheme: dark) { .review-cmd pre.cmd { background: #262b30; } }
+"""
 
 
 @dataclass
@@ -124,6 +145,52 @@ def collect_review_queue(
     )
 
 
+# ------------------------------------------------------------ CLI commands --
+
+_REVIEW_CLI = "tools/review_outcome_learning_signal.py"
+
+
+def suggested_review_id(signal_id: str) -> str:
+    """A deterministic, human-legible suggested ``--review-id`` for a
+    signal's first review: simply ``"review_" + signal_id``. It is only a
+    suggestion the human is free to change -- nothing here inserts it into
+    the database."""
+    return f"review_{signal_id}"
+
+
+def _powershell_quote(value: str) -> str:
+    """Single-quote ``value`` as a PowerShell string literal, doubling any
+    embedded single quotes (PowerShell's own escape for single-quoted
+    strings). Safe for a ``--db`` path or ``--signal-id`` containing spaces
+    or other shell-special characters -- unlike double quotes, PowerShell
+    never expands ``$variables`` or backticks inside a single-quoted
+    string, so this is the safe default for a value we do not control."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def review_commands(db_path: str, signal_id: str) -> tuple[str, str]:
+    """The two copy-paste-ready PowerShell commands a human can run to
+    decide ``signal_id`` through the one sanctioned review CLI
+    (``tools/review_outcome_learning_signal.py``): ``(approve_promote_recompute,
+    reject)``.
+
+    ``--db``, ``--signal-id``, and the suggested ``--review-id`` are real,
+    safely-quoted values; ``--reviewer-id`` and the reject reason are left
+    as ``<placeholder>`` text -- only a human reviewer supplies those, never
+    this page. Pure string building; nothing here runs a command or writes
+    anything.
+    """
+    review_id = suggested_review_id(signal_id)
+    base = (
+        f"python {_REVIEW_CLI} --db {_powershell_quote(db_path)} "
+        f"--signal-id {_powershell_quote(signal_id)} "
+        f"--review-id {_powershell_quote(review_id)} --reviewer-id <reviewer_id>"
+    )
+    approve_promote_recompute = f"{base} --decision approved --promote --recompute"
+    reject = f'{base} --decision rejected --notes "<reason>"'
+    return approve_promote_recompute, reject
+
+
 # --------------------------------------------------------------- rendering --
 
 
@@ -175,6 +242,31 @@ def _pending_section(rows: list[dict[str, Any]]) -> str:
         wrap_columns={7, 9, 11},
     )
     return f"<h2>Pending review</h2>{table}"
+
+
+def _review_commands_section(rows: list[dict[str, Any]], *, db_path: str) -> str:
+    """One block per pending signal with its two copy-paste review
+    commands, as plain preformatted text -- no link, button, form, or
+    script wraps them; a human still has to copy the text into their own
+    shell to run anything."""
+    if not rows:
+        return (
+            "<h2>Suggested review commands</h2>"
+            '<p class="empty">No signals are waiting for review.</p>'
+        )
+    blocks = []
+    for r in rows:
+        approve, reject = review_commands(db_path, r["signal_id"])
+        blocks.append(
+            '<div class="review-cmd">'
+            f'<h3><code>{_esc(r["signal_id"])}</code></h3>'
+            '<p class="cmd-label">Approve + promote + recompute:</p>'
+            f'<pre class="cmd"><code>{html.escape(approve)}</code></pre>'
+            '<p class="cmd-label">Reject:</p>'
+            f'<pre class="cmd"><code>{html.escape(reject)}</code></pre>'
+            "</div>"
+        )
+    return "<h2>Suggested review commands</h2>" + "".join(blocks)
 
 
 def _proposed_evidence_section(rows: list[dict[str, Any]]) -> str:
@@ -250,7 +342,7 @@ def render_reviews_html(queue: ReviewQueue) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>User model manual review queue</title>
-<style>{_CSS}</style>
+<style>{_CSS}{_REVIEWS_CSS}</style>
 </head>
 <body>
 {_nav("reviews")}
@@ -259,12 +351,14 @@ def render_reviews_html(queue: ReviewQueue) -> str:
   <span class="readonly">READ-ONLY</span>
   database: <code>{html.escape(queue.db_path)}</code>{scope}<br>
   generated {html.escape(queue.generated_at.isoformat())}
-  &middot; promotion decisions are made from the CLI
-  (<code>tools/review_outcome_learning_signal.py</code>), not this page
+  &middot; decisions are made by running the commands below yourself, or any
+  other invocation of <code>tools/review_outcome_learning_signal.py</code>
+  -- this page never runs anything
 </div>
 {_summary_cards(queue)}
 {_pending_section(queue.pending_signals)}
 {_proposed_evidence_section(queue.pending_signals)}
+{_review_commands_section(queue.pending_signals, db_path=queue.db_path)}
 {_reviewed_section(queue.reviewed_signals)}
 {_review_trail_section(queue.reviews)}
 </body>
