@@ -289,6 +289,55 @@ weak-only outcome-learning proposals, and review approval vs. rejection.
   (`examples/evals/*.json`) through the full lifecycle and score the result
   against their expectations. Prints a scorecard (text or `--format json`);
   exits nonzero if any expectation fails.
+- `tools/serve_api.py`: run the local internal-alpha HTTP API
+  (`src/api/app.py`, FastAPI) -- a thin wrapper over the same repository and
+  model functions the CLIs use.
+
+## Local API (internal alpha)
+
+`tools/serve_api.py` exposes the model over HTTP for an app to call. It
+re-implements no scoring, recompute, recommendation, outcome-learning, or
+promotion logic -- every endpoint builds a real domain record and persists
+it through `Repository`, exactly as the matching CLI does.
+
+```bash
+python tools/serve_api.py --db canonical.sqlite3            # serve an existing DB
+python tools/serve_api.py --db fresh.sqlite3 --init-db      # create the DB + schema first
+BETTER_YOU_API_DB=canonical.sqlite3 python tools/serve_api.py --port 8100
+```
+
+The database path is explicit (`--db` or `$BETTER_YOU_API_DB`); a missing
+database is an error unless `--init-db` is given. Interactive docs are at
+`http://127.0.0.1:8100/docs`.
+
+Read endpoints (open the DB read-only, never mutate it):
+
+| Method & path | What it returns |
+| --- | --- |
+| `GET /health` | service status + whether the DB file exists |
+| `GET /users/{user_id}/model` | that user's events → beliefs → recommendations → outcomes, same shaping as the `/` viewer |
+| `GET /users/{user_id}/reviews` | that user's pending vs. reviewed outcome-learning signals |
+| `GET /evals` | the eval-harness scorecard (runs in fresh in-memory DBs; never touches the served DB) |
+
+Controlled write endpoints (each validates through the existing
+Pydantic/domain model; the request body is the *only* client-fillable
+surface and rejects any backend-owned field):
+
+| Method & path | Underlying sanctioned path |
+| --- | --- |
+| `POST /events` | `UserEvent` → `Repository.insert_event` |
+| `POST /observations` | `UserObservation` + `ObservationEvent` links → `insert_observation` |
+| `POST /belief-evidence` | `propose_evidence_from_observation_validated` → `authorize_evidence` (stays `leaf_default`) → `insert_evidence` |
+| `POST /beliefs/{belief_id}/recompute` | `recompute_belief` over the active ledger → `save_belief` |
+| `POST /recommendations` | `generate_recommendation` (context/risk policy; locked/outdated/rejected beliefs excluded) → `insert_recommendation` |
+| `POST /recommendation-outcomes` | `RecommendationOutcome` → `insert_recommendation_outcome` (append-only, no learning triggered) |
+
+Deliberately absent: any endpoint that promotes an outcome-learning signal
+or resolves a manual review. Promotion stays with
+`tools/promote_outcome_learning_signal.py` and review approval/rejection with
+`tools/review_outcome_learning_signal.py`. Auth is a TODO
+(`src.api.app.require_alpha_access` is currently a no-op) -- bind to
+localhost and do not expose the port.
 
 ## Manifest References
 
@@ -322,6 +371,7 @@ python -m unittest tests.beliefs.test_canonicalization -v
 python -m unittest tests.beliefs.test_duplicate_suppression -v
 python -m unittest tests.event_intake.test_resolve_belief_key -v
 python -m unittest tests.evals.test_evaluate_user_model -v
+python -m unittest tests.api.test_api -v
 ```
 
 The evaluation harness (`tools/evaluate_user_model.py`) is itself a
@@ -343,9 +393,15 @@ default branch.
 
 ## Current Limitations
 
-- There is no user-facing app yet; model state is inspected as JSON or through
+- There is no user-facing app yet; model state is inspected as JSON, through
   the read-only HTML viewer (`tools/view_user_model.py` /
-  `tools/serve_user_model.py`).
+  `tools/serve_user_model.py`), or through the local internal-alpha API
+  (`tools/serve_api.py`).
+- The local API has no authentication yet
+  (`src.api.app.require_alpha_access` is a no-op stub); it is localhost-only
+  and must not be exposed. It also exposes no aggregate-evidence replacement,
+  no outcome-learning promotion, and no review resolution -- those stay
+  CLI-only.
 - There is no live data collection pipeline yet; events are inserted manually
   or through manifests.
 - Recommendation generation is a deterministic MVP
