@@ -297,8 +297,10 @@ weak-only outcome-learning proposals, and review approval vs. rejection.
 
 `tools/serve_api.py` exposes the model over HTTP for an app to call. It
 re-implements no scoring, recompute, recommendation, outcome-learning, or
-promotion logic -- every endpoint builds a real domain record and persists
-it through `Repository`, exactly as the matching CLI does.
+promotion logic -- every DB-backed endpoint builds a real domain record and
+persists it through `Repository`, exactly as the matching CLI does. One
+endpoint, `POST /roadmaps/generate`, is a stateless bridge for the Better You
+app and touches no database at all.
 
 ```bash
 python tools/serve_api.py --db canonical.sqlite3            # serve an existing DB
@@ -331,6 +333,12 @@ surface and rejects any backend-owned field):
 | `POST /beliefs/{belief_id}/recompute` | `recompute_belief` over the active ledger → `save_belief` |
 | `POST /recommendations` | `generate_recommendation` (context/risk policy; locked/outdated/rejected beliefs excluded) → `insert_recommendation` |
 | `POST /recommendation-outcomes` | `RecommendationOutcome` → `insert_recommendation_outcome` (append-only, no learning triggered) |
+
+Stateless bridge endpoint (no `Repository`, no database, no side effects):
+
+| Method & path | What it does |
+| --- | --- |
+| `POST /roadmaps/generate` | The bridge contract for the Better You app. Accepts **only** `{ "goalCategory": string, "goalTitle": string }` (`extra="forbid"` — a payload carrying `userId`, `profile`, `checkIns`, notes, a goal's free-text `description`, or a whole `Goal` is a 422, not ignored). Returns a `RoadmapDraft`-compatible object (`{ "milestones": [{ "title", "description", "actionSteps": [{ "title", "description" }] }] }`) with no id, user id, status, or timestamp — Better You assigns those after it validates the draft. Opens no DB, creates no belief/evidence/recommendation/outcome. `src/api/roadmap.py` is a deterministic placeholder; richer model-informed reasoning can replace it without the route or contract changing. |
 
 Deliberately absent: any endpoint that promotes an outcome-learning signal
 or resolves a manual review. Promotion stays with
@@ -372,6 +380,7 @@ python -m unittest tests.beliefs.test_duplicate_suppression -v
 python -m unittest tests.event_intake.test_resolve_belief_key -v
 python -m unittest tests.evals.test_evaluate_user_model -v
 python -m unittest tests.api.test_api -v
+python -m unittest tests.api.test_roadmap_generate -v
 ```
 
 The evaluation harness (`tools/evaluate_user_model.py`) is itself a

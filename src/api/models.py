@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.common.enums import (
     BeliefType,
@@ -30,6 +30,50 @@ class ApiModel(BaseModel):
     """Base for every request model: unknown keys are a hard error."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+# ---------------------------------------------------------------------------
+# Roadmap bridge contract (Better You app <-> this project).
+#
+# A compatibility shim, NOT part of the belief/evidence model. Field names are
+# camelCase to match Better You's RoadmapGenerator contract exactly.
+# ``extra="forbid"`` on the request means a payload carrying ``userId``,
+# ``profile``, ``checkIns``, ``notes``, the goal's free-text ``description``,
+# or a whole ``Goal`` object is rejected with 422 -- not silently ignored.
+# See ``src/api/roadmap.py`` and the ``POST /roadmaps/generate`` route.
+# ---------------------------------------------------------------------------
+
+
+class RoadmapGenerateIn(ApiModel):
+    goalCategory: str = Field(min_length=1, max_length=120)
+    goalTitle: str = Field(min_length=1, max_length=200)
+
+    @field_validator("goalCategory", "goalTitle")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+
+class ActionStepDraftOut(BaseModel):
+    title: str
+    description: str
+
+
+class MilestoneDraftOut(BaseModel):
+    title: str
+    description: str
+    actionSteps: list[ActionStepDraftOut]
+
+
+class RoadmapDraftOut(BaseModel):
+    """The only thing ``POST /roadmaps/generate`` returns. No id, user id,
+    goal id, status, or timestamp -- Better You assigns all of those itself
+    after it validates this draft."""
+
+    milestones: list[MilestoneDraftOut]
 
 
 class EventIn(ApiModel):

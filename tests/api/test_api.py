@@ -321,7 +321,9 @@ class NoAutomaticPromotionTests(unittest.TestCase):
             self.assertNotIn("promote", path)
             self.assertNotIn("approve", path)
             self.assertNotIn("reject", path)
-        # the write surface is exactly the six documented endpoints
+        # the POST surface is exactly the documented endpoints: the six
+        # controlled writes plus the stateless /roadmaps/generate bridge
+        # (which touches no repository -- see tests/api/test_roadmap_generate.py)
         write_methods = {
             (route.path, method)
             for route in app.routes
@@ -332,7 +334,7 @@ class NoAutomaticPromotionTests(unittest.TestCase):
             {p for p, _ in write_methods},
             {"/events", "/observations", "/belief-evidence",
              "/beliefs/{belief_id}/recompute", "/recommendations",
-             "/recommendation-outcomes"},
+             "/recommendation-outcomes", "/roadmaps/generate"},
         )
 
     def test_recording_outcomes_never_creates_a_learning_signal(self) -> None:

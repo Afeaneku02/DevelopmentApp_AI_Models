@@ -24,6 +24,11 @@ Controlled writes (each validates through a real domain model):
     POST /recommendations
     POST /recommendation-outcomes
 
+Stateless bridge (no Repository, no database, no side effects):
+    POST /roadmaps/generate   -- turns Better You's sanitized
+                                 {goalCategory, goalTitle} into a
+                                 RoadmapDraft-compatible response
+
 Deliberately absent: any endpoint that promotes an outcome-learning signal
 or resolves a manual review. Those stay CLI-only.
 """
@@ -44,7 +49,10 @@ from src.api.models import (
     RecommendationIn,
     RecommendationOutcomeIn,
     RecomputeIn,
+    RoadmapDraftOut,
+    RoadmapGenerateIn,
 )
+from src.api.roadmap import generate_roadmap_draft
 from src.storage.repository import Repository
 
 API_VERSION = "0.1.0-alpha"
@@ -188,5 +196,20 @@ def create_app(db_path: str | Path, *, init_db: bool = False) -> FastAPI:
         payload: RecommendationOutcomeIn, repo: Repository = Depends(write_repo)
     ) -> dict[str, Any]:
         return _do(service.record_recommendation_outcome, repo, payload)
+
+    # ------------------------------------------ stateless roadmap bridge --
+
+    @app.post("/roadmaps/generate", response_model=RoadmapDraftOut)
+    def post_roadmap_generate(
+        payload: RoadmapGenerateIn, _: None = Depends(require_alpha_access)
+    ) -> RoadmapDraftOut:
+        # The bridge contract for the Better You app (see README and
+        # src/api/roadmap.py). Deliberately stateless: no Repository, no
+        # database, no belief/evidence/recommendation/outcome side effect --
+        # it only shapes a RoadmapDraft from the sanitized
+        # {goalCategory, goalTitle} Better You is willing to send.
+        # ``response_model`` guarantees the reply carries no id, user id,
+        # status, or persistence field.
+        return generate_roadmap_draft(payload.goalCategory, payload.goalTitle)
 
     return app
