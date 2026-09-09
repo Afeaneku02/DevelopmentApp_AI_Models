@@ -48,7 +48,7 @@ def _embed(goal_title: str) -> str:
     title = goal_title.strip()
     if len(title) <= _MAX_EMBED:
         return title
-    return title[: _MAX_EMBED - 1].rstrip() + "…"
+    return title[: _MAX_EMBED - 3].rstrip() + "..."
 
 
 def generate_roadmap_draft(goal_category: str, goal_title: str) -> RoadmapDraftOut:
