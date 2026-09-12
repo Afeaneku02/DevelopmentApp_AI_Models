@@ -14,6 +14,8 @@ Reads (read-only ``Repository``, never mutate the file):
     GET  /health
     GET  /users/{user_id}/model
     GET  /users/{user_id}/reviews
+    GET  /users/{user_id}/mentor-feedback   -- deterministic, grounded
+                                               mentor feedback (no LLM)
     GET  /evals
 
 Controlled writes (each validates through a real domain model):
@@ -53,6 +55,7 @@ from src.api.models import (
     RoadmapGenerateIn,
 )
 from src.api.roadmap import generate_roadmap_draft
+from src.mentor.feedback import MentorFeedbackResult, generate_mentor_feedback
 from src.storage.repository import Repository
 
 API_VERSION = "0.1.0-alpha"
@@ -155,6 +158,26 @@ def create_app(db_path: str | Path, *, init_db: bool = False) -> FastAPI:
     @app.get("/users/{user_id}/reviews")
     def get_user_reviews(user_id: str, repo: Repository = Depends(read_repo)) -> dict[str, Any]:
         return service.read_user_reviews(repo, db_path=db_path, user_id=user_id)
+
+    @app.get("/users/{user_id}/mentor-feedback", response_model=MentorFeedbackResult)
+    def get_mentor_feedback(
+        user_id: str,
+        context_key: str | None = None,
+        goal_category: str | None = None,
+        goal_title: str | None = None,
+        repo: Repository = Depends(read_repo),
+    ) -> MentorFeedbackResult:
+        # Read-only: deterministic feedback derived from stored beliefs +
+        # evidence only. No LLM, no writes, no new facts about the user. When
+        # the stored state is too thin / weak / contradictory / locked /
+        # rejected the response is status="needs_more_data" with a reason.
+        return generate_mentor_feedback(
+            repo,
+            user_id=user_id,
+            context_key=context_key,
+            goal_category=goal_category,
+            goal_title=goal_title,
+        )
 
     @app.get("/evals")
     def get_evals() -> dict[str, Any]:

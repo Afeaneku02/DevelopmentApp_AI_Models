@@ -319,6 +319,7 @@ Read endpoints (open the DB read-only, never mutate it):
 | `GET /health` | service status + whether the DB file exists |
 | `GET /users/{user_id}/model` | that user's events → beliefs → recommendations → outcomes, same shaping as the `/` viewer |
 | `GET /users/{user_id}/reviews` | that user's pending vs. reviewed outcome-learning signals |
+| `GET /users/{user_id}/mentor-feedback` | structured, deterministic mentor feedback grounded in that user's validated/provisional beliefs — or `status: "needs_more_data"` when the stored state is too thin/weak/contradictory/locked/rejected (optional `?context_key=` / `?goal_category=` / `?goal_title=`); no LLM, no writes |
 | `GET /evals` | the eval-harness scorecard (runs in fresh in-memory DBs; never touches the served DB) |
 
 Controlled write endpoints (each validates through the existing
@@ -346,6 +347,40 @@ or resolves a manual review. Promotion stays with
 `tools/review_outcome_learning_signal.py`. Auth is a TODO
 (`src.api.app.require_alpha_access` is currently a no-op) -- bind to
 localhost and do not expose the port.
+
+## Mentor feedback (internal alpha)
+
+`src/mentor/feedback.py` `generate_mentor_feedback(repo, user_id=...)` is a
+deterministic, read-only function (also exposed at
+`GET /users/{user_id}/mentor-feedback`). Given a user's stored beliefs and
+evidence it returns:
+
+```json
+{
+  "status": "ready" | "needs_more_data",
+  "feedback": [
+    {
+      "message": "...",
+      "confidence": 0.42,
+      "grounded_in_belief_ids": ["bel_1"],
+      "why": "Grounded in belief bel_1 (key '...', status provisional, ...). Active evidence: 3 supporting / 0 contradicting ...",
+      "recommended_next_action": "Consider one small ...",   // low-risk only
+      "risk_tier": "low" | "medium" | "high"
+    }
+  ],
+  "needs_more_data_reason": "..."   // only when status is needs_more_data
+}
+```
+
+No LLM. It uses only `validated` / `provisional` beliefs that are not
+locked, of a non-sensitive type, above a confidence floor, and (when a
+`context_key` is given) authorized by the same `authorize_beliefs_for_context`
+gate the recommendation engine uses. Active supporting evidence must clearly
+outweigh contradicting evidence. A `high`-risk context yields reflective
+observations only — no `recommended_next_action`, capped confidence — and
+any item whose wording strays toward high-stakes life advice (careers,
+medical, financial, legal, relocation, education decisions) is dropped. When
+nothing survives, `status` is `needs_more_data` with a specific reason.
 
 ## Manifest References
 
@@ -381,6 +416,7 @@ python -m unittest tests.event_intake.test_resolve_belief_key -v
 python -m unittest tests.evals.test_evaluate_user_model -v
 python -m unittest tests.api.test_api -v
 python -m unittest tests.api.test_roadmap_generate -v
+python -m unittest tests.mentor.test_feedback -v
 ```
 
 The evaluation harness (`tools/evaluate_user_model.py`) is itself a
