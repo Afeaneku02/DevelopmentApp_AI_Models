@@ -247,6 +247,11 @@ weak-only outcome-learning proposals, and review approval vs. rejection.
   command.
 - `tools/add_user_event.py`: insert one raw user event.
 - `tools/add_user_observation.py`: insert one observation linked to events.
+- `tools/process_user_events.py`: batch-process a user's stored events into
+  conservative observations, using a fixed, reviewed mapping for a handful of
+  low-risk Better You event types (no LLM, no free text, no belief_evidence
+  or beliefs). Idempotent -- re-running creates no duplicates. Dry run unless
+  `--persist`.
 - `tools/add_belief_evidence.py`: create authorized belief evidence from an
   observation.
 - `tools/resolve_belief_key.py`: resolve a proposed belief key through the
