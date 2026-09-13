@@ -254,6 +254,15 @@ weak-only outcome-learning proposals, and review approval vs. rejection.
   `--persist`.
 - `tools/add_belief_evidence.py`: create authorized belief evidence from an
   observation.
+- `tools/process_observations_to_evidence.py`: batch-process a user's stored
+  observations into conservative belief_evidence, using a fixed, reviewed
+  mapping for a handful of low-risk categories (repeated check-ins ->
+  check-in consistency, roadmap step completions -> follow-through on
+  action steps). No LLM; `source_type=recorded_event` always; provenance
+  always traces to real `observation_events`/`source_event_ids`. Idempotent
+  -- re-running creates no duplicates. Dry run unless `--persist`; a belief
+  that received new evidence is left `locked_until_recompute` unless
+  `--recompute` (which requires `--persist`) is also given.
 - `tools/resolve_belief_key.py`: resolve a proposed belief key through the
   backend canonicalization policy and save an audit record.
 - `tools/recompute_belief.py`: recompute and save one belief from active
