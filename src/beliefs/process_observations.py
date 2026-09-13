@@ -111,15 +111,26 @@ class EvidenceDraft:
 
 def _draft_check_in(observation: UserObservation, source_events: list[UserEvent]) -> EvidenceDraft | None:
     # Corroborated against the linked source event(s), never the
-    # observation's own prose text (see module docstring). Exactly one
-    # matching check_in_recorded response is required: zero means this
-    # observation's links do not actually support a check-in claim; more
-    # than one is a multi-event observation this narrow mapper does not
-    # know how to combine, so it declines rather than guessing.
+    # observation's own prose text (see module docstring). Every linked
+    # event must be a genuine check_in_recorded event - a mixed-source
+    # observation (e.g. one check-in event plus something unrelated) is
+    # never trusted, even if the check-in event(s) present would otherwise
+    # agree on a response, so evidence.source_event_ids can never end up
+    # including an event this belief has nothing to do with. An
+    # observation with no linked events at all is likewise declined
+    # (`all()` over an empty sequence is vacuously true, so this is
+    # checked explicitly rather than relying on that).
+    if not source_events or not all(event.event_type == "check_in_recorded" for event in source_events):
+        return None
+
+    # Exactly one matching response is required: zero means the linked
+    # event(s) don't carry a recognizable response; more than one is a
+    # multi-event observation this narrow mapper does not know how to
+    # combine, so it declines rather than guessing.
     responses = {
         event.structured_data.get("response")
         for event in source_events
-        if event.event_type == "check_in_recorded" and isinstance(event.structured_data, dict)
+        if isinstance(event.structured_data, dict)
     }
     if len(responses) != 1:
         return None
@@ -153,7 +164,11 @@ def _draft_check_in(observation: UserObservation, source_events: list[UserEvent]
 def _draft_roadmap_step_completed(
     observation: UserObservation, source_events: list[UserEvent]
 ) -> EvidenceDraft | None:
-    if not any(event.event_type == "roadmap_step_completed" for event in source_events):
+    # Every linked event must be a genuine roadmap_step_completed event -
+    # same mixed-source homogeneity requirement as _draft_check_in above,
+    # and the same reason an empty source_events list is checked explicitly
+    # rather than relying on `all()`'s vacuous truth for an empty sequence.
+    if not source_events or not all(event.event_type == "roadmap_step_completed" for event in source_events):
         return None
     return EvidenceDraft(
         belief_type=_ROADMAP_STEP_BELIEF_TYPE,

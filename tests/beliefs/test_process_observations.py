@@ -193,11 +193,76 @@ class ProvenanceTests(unittest.TestCase):
         finally:
             repo.close()
 
-        # two distinct responses linked to one observation -> the drafter
-        # declines (see UnsupportedTests below for the single-event case);
-        # here both events report "yes", so exactly one confident value.
+        # Both linked events are genuinely check_in_recorded and agree on
+        # "yes" - homogeneous and unambiguous, so this still works.
         self.assertEqual([o.action for o in result.outcomes], ["created"])
         self.assertEqual(sorted(evidence[0].source_event_ids), ["evt_1", "evt_2"])
+
+    def test_check_in_observation_linked_to_one_unrelated_event_is_skipped_no_signal(self) -> None:
+        # Every linked source event must be check_in_recorded - a
+        # mixed-source observation is never trusted, even though the one
+        # check_in_recorded event present has a perfectly good response.
+        # This must never produce evidence whose source_event_ids includes
+        # the unrelated event.
+        repo = Repository.in_memory()
+        try:
+            check_in = _check_in_event("evt_1", response="yes")
+            unrelated = _roadmap_step_event("evt_2")
+            repo.insert_event(check_in)
+            repo.insert_event(unrelated)
+            observation, links = create_observation_from_event(
+                check_in, observation_id="obs_mixed", category="check_in",
+                observation_text="User completed a scheduled check-in.",
+                importance=0.3, confidence=0.9, created_at=AS_OF, **VERSION_FIELDS,
+            )
+            from src.common.enums import LinkRole
+            from src.observations.models import ObservationEvent
+            links = links + [
+                ObservationEvent(
+                    observation_id="obs_mixed", event_id="evt_2", link_role=LinkRole.SUPPORTING,
+                    created_at=AS_OF, **VERSION_FIELDS,
+                )
+            ]
+            repo.insert_observation(observation, links)
+
+            result = process_user_observations(repo, user_id="usr_1", as_of=AS_OF, persist=True)
+            evidence = repo.list_all_evidence(user_id="usr_1")
+        finally:
+            repo.close()
+
+        self.assertEqual([o.action for o in result.outcomes], ["skipped_no_signal"])
+        self.assertEqual(evidence, [])
+
+    def test_goal_progress_observation_linked_to_one_unrelated_event_is_skipped_no_signal(self) -> None:
+        # Same homogeneity requirement for the roadmap-step mapper.
+        repo = Repository.in_memory()
+        try:
+            step = _roadmap_step_event("evt_1")
+            unrelated = _check_in_event("evt_2", response="yes")
+            repo.insert_event(step)
+            repo.insert_event(unrelated)
+            observation, links = create_observation_from_event(
+                step, observation_id="obs_mixed", category="goal_progress",
+                observation_text="User completed a roadmap action step.",
+                importance=0.5, confidence=0.9, created_at=AS_OF, **VERSION_FIELDS,
+            )
+            from src.common.enums import LinkRole
+            from src.observations.models import ObservationEvent
+            links = links + [
+                ObservationEvent(
+                    observation_id="obs_mixed", event_id="evt_2", link_role=LinkRole.SUPPORTING,
+                    created_at=AS_OF, **VERSION_FIELDS,
+                )
+            ]
+            repo.insert_observation(observation, links)
+
+            result = process_user_observations(repo, user_id="usr_1", as_of=AS_OF, persist=True)
+            evidence = repo.list_all_evidence(user_id="usr_1")
+        finally:
+            repo.close()
+
+        self.assertEqual([o.action for o in result.outcomes], ["skipped_no_signal"])
+        self.assertEqual(evidence, [])
 
     def test_cli_output_reports_the_provenance_bearing_belief_id_and_evidence_id(self) -> None:
         with TemporaryDirectory() as tmp:
