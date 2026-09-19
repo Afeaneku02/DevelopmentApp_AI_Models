@@ -123,6 +123,17 @@ class RecomputeIn(ApiModel):
     allow_no_evidence: bool = False
 
 
+class ProcessUserIn(ApiModel):
+    """Body for ``POST /users/{user_id}/process`` -- runs the whole local
+    pipeline (unprocessed events -> observations -> belief_evidence ->
+    belief recomputation) for the user named in the path. ``as_of`` defaults
+    to now; ``dry_run=True`` reports what would happen without writing or
+    recomputing anything."""
+
+    as_of: datetime | None = None
+    dry_run: bool = False
+
+
 class RecommendationIn(ApiModel):
     recommendation_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)

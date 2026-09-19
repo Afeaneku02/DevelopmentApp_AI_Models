@@ -268,6 +268,26 @@ class Repository:
         uri = f"file:{resolved.resolve().as_posix()}?mode=ro"
         return cls(sqlite3.connect(uri, uri=True), run_schema=False)
 
+    def clone_in_memory(self) -> "Repository":
+        """Return a new, independent, writable, in-memory ``Repository``
+        holding a full copy of this one's data at the moment of the call --
+        schema and every row, via SQLite's own backup API
+        (``sqlite3.Connection.backup``) rather than this class's own
+        read/insert methods, so the clone is exact even for tables this
+        class has no accessor for yet.
+
+        Built for a caller (``src.orchestration.process_user_pipeline``'s
+        dry-run simulation) that needs a real, disposable database to
+        actually write to and read back from -- the clone is independent of
+        ``self`` from the moment this returns: writing to it, including
+        through a ``self`` opened read-only via ``readonly_at_path``, never
+        touches ``self``'s own connection or storage, and closing ``self``
+        afterward does not affect the clone.
+        """
+        clone = Repository(sqlite3.connect(":memory:"), run_schema=False)
+        self._conn.backup(clone._conn)
+        return clone
+
     def close(self) -> None:
         self._conn.close()
 

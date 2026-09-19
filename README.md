@@ -263,6 +263,21 @@ weak-only outcome-learning proposals, and review approval vs. rejection.
   -- re-running creates no duplicates. Dry run unless `--persist`; a belief
   that received new evidence is left `locked_until_recompute` unless
   `--recompute` (which requires `--persist`) is also given.
+- `tools/process_user.py`: run one user through the whole existing pipeline
+  in a single command -- unprocessed events -> observations ->
+  belief_evidence -> belief recomputation -- reusing
+  `process_user_events`/`process_user_observations` exactly (nothing is
+  re-implemented). Idempotent -- re-running creates no duplicates and
+  recomputes nothing new. Scoped to `--user-id` only. One record's
+  unexpected failure is isolated and reported, never corrupting or blocking
+  any other record. Dry run unless `--persist`; recompute is mandatory (not
+  opt-in) for any belief that receives new evidence this run. A dry run
+  accurately simulates the *complete* chain -- including a stage-one
+  observation the same run would create feeding stage two's evidence and
+  recompute preview -- against a disposable in-memory clone of `--db`, never
+  a partial "events only" guess. Exits `2` (not `0`) if any record hit an
+  unexpected failure, even when every other record succeeded or was safely
+  skipped.
 - `tools/resolve_belief_key.py`: resolve a proposed belief key through the
   backend canonicalization policy and save an audit record.
 - `tools/recompute_belief.py`: recompute and save one belief from active
@@ -346,6 +361,7 @@ surface and rejects any backend-owned field):
 | `POST /observations` | `UserObservation` + `ObservationEvent` links → `insert_observation` |
 | `POST /belief-evidence` | `propose_evidence_from_observation_validated` → `authorize_evidence` (stays `leaf_default`) → `insert_evidence` |
 | `POST /beliefs/{belief_id}/recompute` | `recompute_belief` over the active ledger → `save_belief` |
+| `POST /users/{user_id}/process` | Runs the whole pipeline for one user: unprocessed events → observations → belief_evidence → belief recomputation, via `process_user_full_pipeline` (`src/orchestration/process_user_pipeline.py`), reusing `process_user_events`/`process_user_observations` exactly. Idempotent; scoped to the path's `user_id` only; one record's unexpected failure is isolated and reported (never corrupts or blocks another record). `{"dry_run": true}` reports what would happen without writing anything. |
 | `POST /recommendations` | `generate_recommendation` (context/risk policy; locked/outdated/rejected beliefs excluded) → `insert_recommendation` |
 | `POST /recommendation-outcomes` | `RecommendationOutcome` → `insert_recommendation_outcome` (append-only, no learning triggered) |
 

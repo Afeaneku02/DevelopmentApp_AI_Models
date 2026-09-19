@@ -321,7 +321,7 @@ class NoAutomaticPromotionTests(unittest.TestCase):
             self.assertNotIn("promote", path)
             self.assertNotIn("approve", path)
             self.assertNotIn("reject", path)
-        # the POST surface is exactly the documented endpoints: the six
+        # the POST surface is exactly the documented endpoints: the seven
         # controlled writes plus the stateless /roadmaps/generate bridge
         # (which touches no repository -- see tests/api/test_roadmap_generate.py)
         write_methods = {
@@ -333,8 +333,8 @@ class NoAutomaticPromotionTests(unittest.TestCase):
         self.assertEqual(
             {p for p, _ in write_methods},
             {"/events", "/observations", "/belief-evidence",
-             "/beliefs/{belief_id}/recompute", "/recommendations",
-             "/recommendation-outcomes", "/roadmaps/generate"},
+             "/beliefs/{belief_id}/recompute", "/users/{user_id}/process",
+             "/recommendations", "/recommendation-outcomes", "/roadmaps/generate"},
         )
 
     def test_recording_outcomes_never_creates_a_learning_signal(self) -> None:
@@ -406,6 +406,95 @@ class EvalsEndpointTests(unittest.TestCase):
         self.assertTrue(body["passed"])
         self.assertEqual(body["summary"]["failed"], 0)
         self.assertGreaterEqual(body["summary"]["scenarios"], 8)
+
+
+class ProcessUserEndpointTests(unittest.TestCase):
+    def test_runs_the_whole_pipeline_for_one_user_and_recomputes_a_belief(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "api.sqlite3")
+            client = _client(db)
+            self.assertEqual(
+                client.post(
+                    "/events",
+                    json={"user_id": "u1", "event_id": "e1", "event_type": "check_in_recorded",
+                          "source": "app", "timestamp": "2026-01-01T12:00:00Z",
+                          "structured_data": {"goalId": "g1", "checkInId": "c1", "response": "yes"}},
+                ).status_code,
+                201,
+            )
+
+            r = client.post("/users/u1/process", json={"as_of": "2026-01-02T12:00:00Z"})
+            self.assertEqual(r.status_code, 200)
+            body = r.json()
+            self.assertEqual(body["user_id"], "u1")
+            self.assertTrue(body["persisted"])
+            self.assertEqual(
+                body["counts"], {"processed": 2, "created": 2, "skipped": 0, "failed": 0, "recomputed": 1}
+            )
+            self.assertEqual(body["failures"], [])
+
+            repo = Repository.readonly_at_path(db)
+            try:
+                observations = repo.list_observations(user_id="u1")
+                evidence = repo.list_all_evidence(user_id="u1")
+                belief = repo.get_latest_belief(user_id="u1", belief_id="bel_u1_checkin_consistency")
+            finally:
+                repo.close()
+            self.assertEqual(len(observations), 1)
+            self.assertEqual(len(evidence), 1)
+            self.assertIsNotNone(belief)
+            self.assertFalse(belief.locked_until_recompute)
+
+    def test_dry_run_writes_nothing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "api.sqlite3")
+            client = _client(db)
+            self.assertEqual(
+                client.post(
+                    "/events",
+                    json={"user_id": "u1", "event_id": "e1", "event_type": "check_in_recorded",
+                          "source": "app", "timestamp": "2026-01-01T12:00:00Z",
+                          "structured_data": {"goalId": "g1", "checkInId": "c1", "response": "yes"}},
+                ).status_code,
+                201,
+            )
+            before = Path(db).read_bytes()
+
+            r = client.post("/users/u1/process", json={"dry_run": True})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()["persisted"], False)
+            self.assertEqual(Path(db).read_bytes(), before)
+
+    def test_only_the_named_user_is_processed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "api.sqlite3")
+            client = _client(db)
+            for user_id, event_id in [("u1", "e1"), ("u2", "e2")]:
+                self.assertEqual(
+                    client.post(
+                        "/events",
+                        json={"user_id": user_id, "event_id": event_id, "event_type": "check_in_recorded",
+                              "source": "app", "timestamp": "2026-01-01T12:00:00Z",
+                              "structured_data": {"goalId": "g1", "checkInId": f"c_{event_id}", "response": "yes"}},
+                    ).status_code,
+                    201,
+                )
+
+            r = client.post("/users/u1/process", json={})
+            self.assertEqual(r.status_code, 200)
+
+            repo = Repository.readonly_at_path(db)
+            try:
+                u2_observations = repo.list_observations(user_id="u2")
+            finally:
+                repo.close()
+            self.assertEqual(u2_observations, [])
+
+    def test_rejects_an_unknown_field(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "api.sqlite3")
+            r = _client(db).post("/users/u1/process", json={"user_id": "u1"})
+        self.assertEqual(r.status_code, 422)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,15 @@ Controlled writes (each validates through a real domain model):
     POST /observations
     POST /belief-evidence
     POST /beliefs/{belief_id}/recompute
+    POST /users/{user_id}/process   -- run the whole existing pipeline
+                                        (unprocessed events -> observations
+                                        -> belief_evidence -> recompute) for
+                                        one user in one call; see
+                                        src.orchestration.process_user_pipeline.
+                                        Internal-only, same as every other
+                                        write route -- no LLM, nothing new
+                                        beyond what the individual write
+                                        routes above already do.
     POST /recommendations
     POST /recommendation-outcomes
 
@@ -48,6 +57,7 @@ from src.api.models import (
     BeliefEvidenceIn,
     EventIn,
     ObservationIn,
+    ProcessUserIn,
     RecommendationIn,
     RecommendationOutcomeIn,
     RecomputeIn,
@@ -207,6 +217,17 @@ def create_app(db_path: str | Path, *, init_db: bool = False) -> FastAPI:
         belief_id: str, payload: RecomputeIn, repo: Repository = Depends(write_repo)
     ) -> dict[str, Any]:
         return _do(service.recompute, repo, belief_id, payload)
+
+    @app.post("/users/{user_id}/process", status_code=200)
+    def post_process_user(
+        user_id: str, payload: ProcessUserIn, repo: Repository = Depends(write_repo)
+    ) -> dict[str, Any]:
+        # Runs the existing events -> observations -> belief_evidence ->
+        # recompute chain for this user only (see
+        # src.orchestration.process_user_pipeline). Behind the same
+        # require_alpha_access no-op as every other write route -- bind to
+        # localhost and do not expose (see the module docstring).
+        return _do(service.process_user, repo, user_id, payload)
 
     @app.post("/recommendations", status_code=201)
     def post_recommendation(

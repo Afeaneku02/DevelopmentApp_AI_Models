@@ -17,6 +17,7 @@ Errors are raised, not translated to HTTP here (``src.api.app`` maps them):
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +27,7 @@ from src.beliefs.recompute import recompute_belief
 from src.common.enums import LinkRole
 from src.events.models import UserEvent
 from src.observations.models import ObservationEvent, UserObservation
+from src.orchestration.process_user_pipeline import process_user_full_pipeline
 from src.recommendations.engine import generate_recommendation
 from src.recommendations.models import RecommendationOutcome
 from src.viewer.evals_view import collect_eval_report
@@ -36,6 +38,7 @@ from src.api.models import (
     BeliefEvidenceIn,
     EventIn,
     ObservationIn,
+    ProcessUserIn,
     RecommendationIn,
     RecommendationOutcomeIn,
     RecomputeIn,
@@ -206,6 +209,39 @@ def recompute(repo: Any, belief_id: str, payload: RecomputeIn) -> dict[str, Any]
     )
     repo.save_belief(belief)
     return belief.model_dump(mode="json")
+
+
+def process_user(repo: Any, user_id: str, payload: ProcessUserIn) -> dict[str, Any]:
+    """Run the whole local pipeline -- unprocessed events -> observations ->
+    belief_evidence -> belief recomputation -- for one user, through
+    ``src.orchestration.process_user_pipeline`` (which itself reuses
+    ``process_user_events``/``process_user_observations`` exactly; nothing is
+    re-implemented here). Internal-only: see ``require_alpha_access`` and
+    ``src.api.app``'s module docstring -- this must stay behind localhost
+    until real auth exists.
+    """
+    result = process_user_full_pipeline(
+        repo, user_id=user_id, as_of=_utc(payload.as_of), persist=not payload.dry_run,
+    )
+    return {
+        "user_id": result.user_id,
+        "persisted": result.persisted,
+        "counts": result.counts(),
+        "events": {
+            "processed": result.events_processed,
+            "created": result.events_created,
+            "skipped": result.events_skipped,
+            "failed": result.events_failed,
+        },
+        "observations": {
+            "processed": result.observations_processed,
+            "created": result.observations_created,
+            "skipped": result.observations_skipped,
+            "failed": result.observations_failed,
+        },
+        "recomputed_belief_ids": result.recomputed_belief_ids,
+        "failures": [asdict(failure) for failure in result.failures],
+    }
 
 
 def make_recommendation(repo: Any, payload: RecommendationIn) -> dict[str, Any]:
