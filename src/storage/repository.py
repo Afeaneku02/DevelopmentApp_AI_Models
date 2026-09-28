@@ -226,9 +226,19 @@ class Repository:
     def in_memory(cls) -> "Repository":
         return cls(sqlite3.connect(":memory:"))
 
+    # ``check_same_thread=False`` on the on-disk constructors: the FastAPI app
+    # (src/api/app.py) opens one Repository per request in a sync generator
+    # dependency, which FastAPI runs in a threadpool thread that is usually
+    # NOT the thread the sync endpoint then runs in. With sqlite3's default
+    # thread check that intermittently fails the request with
+    # ``ProgrammingError: SQLite objects created in a thread can only be used
+    # in that same thread`` (observed on POST /events, /users/{id}/process and
+    # /users/{id}/mentor-guidance). Each connection is still used by one
+    # request at a time, sequentially, and closed afterwards - it is never
+    # shared concurrently - so disabling the check is safe here.
     @classmethod
     def at_path(cls, path: str) -> "Repository":
-        return cls(sqlite3.connect(path))
+        return cls(sqlite3.connect(path, check_same_thread=False))
 
     @classmethod
     def readonly_at_path(cls, path: str) -> "Repository":
@@ -266,7 +276,7 @@ class Repository:
         if not resolved.is_file():
             raise FileNotFoundError(f"no such database file: {path!r}")
         uri = f"file:{resolved.resolve().as_posix()}?mode=ro"
-        return cls(sqlite3.connect(uri, uri=True), run_schema=False)
+        return cls(sqlite3.connect(uri, uri=True, check_same_thread=False), run_schema=False)
 
     def clone_in_memory(self) -> "Repository":
         """Return a new, independent, writable, in-memory ``Repository``

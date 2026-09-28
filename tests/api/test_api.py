@@ -324,6 +324,7 @@ class NoAutomaticPromotionTests(unittest.TestCase):
         # the POST surface is exactly the documented endpoints: the seven
         # controlled writes plus the stateless /roadmaps/generate bridge
         # (which touches no repository -- see tests/api/test_roadmap_generate.py)
+        # plus the billable but read-only mentor-guidance endpoint.
         write_methods = {
             (route.path, method)
             for route in app.routes
@@ -334,7 +335,8 @@ class NoAutomaticPromotionTests(unittest.TestCase):
             {p for p, _ in write_methods},
             {"/events", "/observations", "/belief-evidence",
              "/beliefs/{belief_id}/recompute", "/users/{user_id}/process",
-             "/recommendations", "/recommendation-outcomes", "/roadmaps/generate"},
+             "/recommendations", "/recommendation-outcomes", "/roadmaps/generate",
+             "/users/{user_id}/mentor-guidance"},
         )
 
     def test_recording_outcomes_never_creates_a_learning_signal(self) -> None:

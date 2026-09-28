@@ -1,5 +1,8 @@
 # DevelopmentApp AI Models
 
+The optional local OpenAI mentor is documented in [OPENAI_MENTOR.md](OPENAI_MENTOR.md),
+including startup, the new read-only guidance endpoint, mock/live tests and experiment limits.
+
 [![CI](https://github.com/Afeaneku02/DevelopmentApp_AI_Models/actions/workflows/ci.yml/badge.svg)](https://github.com/Afeaneku02/DevelopmentApp_AI_Models/actions/workflows/ci.yml)
 
 This repository currently contains the early Better You adaptive user model

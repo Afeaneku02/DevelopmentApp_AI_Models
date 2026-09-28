@@ -67,6 +67,9 @@ from src.api.models import (
 from src.api.roadmap import generate_roadmap_draft
 from src.mentor.feedback import MentorFeedbackResult, generate_mentor_feedback
 from src.storage.repository import Repository
+from src.llm.base import MentorProvider
+from src.llm.models import MentorRequest, MentorResponse
+from src.mentor.guidance import generate_guidance
 
 API_VERSION = "0.1.0-alpha"
 
@@ -95,7 +98,7 @@ def _map_domain_error(exc: Exception) -> HTTPException:
     raise exc  # pragma: no cover - unexpected, let FastAPI 500 it
 
 
-def create_app(db_path: str | Path, *, init_db: bool = False) -> FastAPI:
+def create_app(db_path: str | Path, *, init_db: bool = False, mentor_provider: MentorProvider | None = None) -> FastAPI:
     db_path = str(db_path)
 
     if init_db and not Path(db_path).is_file():
@@ -115,6 +118,7 @@ def create_app(db_path: str | Path, *, init_db: bool = False) -> FastAPI:
     )
     app.state.db_path = db_path
     app.state.init_db = init_db
+    app.state.mentor_provider = mentor_provider
 
     def _require_db_file() -> None:
         if not Path(db_path).is_file():
@@ -149,6 +153,22 @@ def create_app(db_path: str | Path, *, init_db: bool = False) -> FastAPI:
             raise _map_domain_error(exc) from exc
 
     # ----------------------------------------------------------- reads --
+
+    @app.post("/users/{user_id}/mentor-guidance", response_model=MentorResponse,
+              dependencies=[Depends(require_alpha_access)])
+    def post_mentor_guidance(user_id: str, payload: MentorRequest,
+                            repo: Repository = Depends(read_repo)) -> MentorResponse:
+        # POST makes a potentially billable request explicit. Database access
+        # remains read-only. The existing GET mentor endpoint is unchanged.
+        provider = app.state.mentor_provider
+        if provider is None:
+            from src.llm.config import Settings
+            from src.llm.openai_provider import OpenAIMentorProvider
+            try:
+                provider = OpenAIMentorProvider(Settings.from_environment())
+            except Exception:
+                raise HTTPException(status_code=503, detail="mentor_configuration_invalid") from None
+        return generate_guidance(repo, user_id=user_id, request=payload, provider=provider)
 
     @app.get("/health")
     def health() -> dict[str, Any]:

@@ -1,5 +1,12 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.env
+.env.*
+!.env.example
+.venv/
+.local/
+canonical.sqlite3
+canonical.sqlite3-*
 .claude/skills/skill-creator/
 Blueprint/

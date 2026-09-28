@@ -72,8 +72,18 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
     from src.api.app import create_app
+    from src.llm.config import ROOT, Settings
+    from src.llm.openai_provider import OpenAIMentorProvider
 
-    app = create_app(db_path, init_db=args.init_db)
+    try:
+        settings = Settings.from_environment(ROOT / ".env")
+    except Exception:
+        print("Invalid mentor configuration; check local environment settings.", file=sys.stderr)
+        return 2
+    if settings.api_key.get_secret_value() and args.host not in {"127.0.0.1", "localhost", "::1"}:
+        print("Paid mentor integration is local-only until API authentication is implemented.", file=sys.stderr)
+        return 2
+    app = create_app(db_path, init_db=args.init_db, mentor_provider=OpenAIMentorProvider(settings))
     print(
         f"Serving adaptive user model API for {db_path!r} at "
         f"http://{args.host}:{args.port}/  (docs at /docs, Ctrl+C to stop)"

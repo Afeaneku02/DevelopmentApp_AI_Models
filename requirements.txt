@@ -7,6 +7,8 @@ pydantic>=2
 fastapi>=0.110
 uvicorn>=0.29
 httpx>=0.27
+openai>=2.0,<3
+python-dotenv>=1.0,<2
 
 # Required by tools/document_reader/ for full-fidelity DOCX/XLSX/PPTX/PDF parsing:
 openpyxl>=3.1
